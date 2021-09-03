@@ -5,28 +5,36 @@ import numpy
 
 
 class BN:
-    def __init__(self, synapses_count, sources_dim, sources, activation_treshold):
-        self.synapses_count = synapses_count
+    def __init__(self, sources_dim, sources):
         self.synapses = numpy.zeros(
-            (self.synapses_count,),
+            (0,),
             dtype=int,
         )
         self.sources_dim = sources_dim
         self.sources = sources
         for s in self.sources:
             assert len(s) == self.sources_dim
-        self.activation_treshold = activation_treshold
+        self.activation_treshold = 0
 
-    def infer(self, position, result):
-        print('bn', position)
+    def get_absolute_sources_slice(self, position):
         sources_absolute = self.sources[self.synapses] + position
         sources_slice = tuple(
             sources_absolute[:,i]
             for i in range(self.sources_dim)
         )
-        inputs = result[sources_slice]
+        return sources_slice
+
+    def infer(self, position, result):
+        print('infer', position)
+        inputs = result[self.get_absolute_sources_slice(position)]
         activations = numpy.sum(inputs, axis=0)
         result[position] = activations >= self.activation_treshold
+
+    def compute_error_too_much(self, position, result, error):
+        print('compute_error', position)
+        sources_slice = self.get_absolute_sources_slice(position)
+        inputs = result[sources_slice]
+        error[sources_slice] += error[position] * inputs / len(self.synapses)
 
 
 class ConvBNN:
@@ -78,7 +86,7 @@ class ConvBNN:
                     *pos,
                 ), workplace)
 
-
+"""
 bnn = ConvBNN(
     dim=2,
     margin=1,
@@ -159,3 +167,4 @@ input[0] = True
 #print('input\n', input)
 result = bnn.infer(input)
 print(result)
+"""
