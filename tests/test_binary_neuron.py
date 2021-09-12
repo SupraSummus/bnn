@@ -35,6 +35,7 @@ def test_inference():
     result[3, 2] = False
     assert (result == orig).all()
 
+
 def test_compute_error():
     bn = BN(
         sources_dim=1,

@@ -3,7 +3,6 @@ from itertools import product
 import numpy
 
 
-
 class BN:
     def __init__(self, sources_dim, sources):
         self.excitators = []
@@ -17,7 +16,7 @@ class BN:
     def get_absolute_sources_slice(self, position, source_indices):
         sources_absolute = self.sources[source_indices] + position
         sources_slice = tuple(
-            sources_absolute[:,i]
+            sources_absolute[:, i]
             for i in range(self.sources_dim)
         )
         return sources_slice
@@ -44,6 +43,7 @@ class BN:
         not_enough[inhibitors_slice] += too_much[position] * ~inhibitions / too_much_contributor_count
         not_enough[excitators_slice] += not_enough[position] * ~excitations / not_enough_contributor_count
         too_much[inhibitors_slice] += not_enough[position] * inhibitions / not_enough_contributor_count
+
 
 class ConvBNN:
     def __init__(self, dim, margin, sample_depth, neuron_count, **kwargs):
@@ -93,86 +93,3 @@ class ConvBNN:
                     i + self.sample_depth,
                     *pos,
                 ), workplace)
-
-"""
-bnn = ConvBNN(
-    dim=2,
-    margin=1,
-    sample_depth=3,
-    neuron_count=7,
-    synapses_count=4,
-    activation_treshold=2,
-)
-
-sample_size = 5
-batch_size = 2
-
-input = numpy.random.rand(bnn.sample_depth, sample_size, sample_size, batch_size) > 0.5
-input[0] = False
-input[1] = True
-
-workplace = bnn.make_workplace(input)
-print(workplace.shape)
-bnn.infer(workplace)
-
-exit(0)
-
-class BNN:
-    def __init__(self, neuron_count, synapses_per_neuron, symmetries):
-        self.neuron_count = neuron_count
-        self.synapses_per_neuron = synapses_per_neuron
-        self.symmetries = symmetries
-
-        self.synapses = numpy.zeros(
-            (self.neuron_count, self.synapses_per_neuron, len(self.symmetries) + 1),
-            dtype=int,
-        )
-        #self.synapses_relative = numpy.zeros(
-        #    (self.neuron_count, self.synapses_per_neuron),
-        #    dtype=(int, len(self.symmetries)),
-        #)
-        self.tresholds = numpy.zeros((self.neuron_count,), dtype=int)
-
-    def infer(self, input):
-        input_size, *input_dim = input.shape
-        result = numpy.zeros([self.neuron_count] + input_dim, dtype=bool)
-        result[:input_size] = input
-
-        indices = numpy.indices(
-            [self.neuron_count] + input_dim,
-        )
-        print(input.shape, result.shape, indices.shape)
-        #print('indices\n', indices)
-        #3/0
-
-        for i in range(self.neuron_count):
-            synapses_diff = indices[:,i,:]
-            print(synapses_diff)
-            synapses_abs = self.synapses[i] + synapses_diff
-            activations = result[synapses_abs]
-            #print('l', i, '\n', activations)
-
-            result[i]
-
-        return result
-
-
-bnn = BNN(
-    neuron_count=7,
-    synapses_per_neuron=4,
-    flow=[  # conv 1d
-        (-1, -1),
-        (-1, 0),
-        (-1, 1),
-    ],
-    #flow=[  # recurrent 1d
-    #    (None, (-inf, -1)),
-    #    (-1, 0),
-    #],
-)
-input = numpy.random.rand(2, 15) > 0.5
-input[0] = True
-#print('input\n', input)
-result = bnn.infer(input)
-print(result)
-"""
