@@ -35,14 +35,14 @@ def str_bool_array(arr):
     return ''.join(ret)
 
 
-batch_size = 1024 * 16
+batch_size = 1024
 dtype = numpy.uint16
 
 bnn = ConvBNN(
     dim=2,
     margin=1,
     sample_depth=1,
-    neuron_count=128,
+    neuron_count=1024,
 )
 
 for i in range(train_images_count // batch_size):

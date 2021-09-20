@@ -6,11 +6,11 @@ def test_empty():
     bn = BN(sources_dim=0, sources=numpy.array([]))
 
     signal = numpy.zeros(shape=(0,), dtype=bool)
-    bn.infer((), signal)
+    bn.infer(numpy.array([]), signal)
 
     too_much = numpy.zeros(shape=(0,), dtype=float)
     not_enough = numpy.zeros(shape=(0,), dtype=float)
-    bn.compute_error((), signal, too_much, not_enough)
+    bn.compute_error(numpy.array([]), signal, too_much, not_enough)
 
 
 def test_inference():
@@ -30,7 +30,7 @@ def test_inference():
     signal[1, 3, 2] = True
     signal[(2, 1), (0, 3), 3] = True
     orig_signal = signal.copy()
-    bn.infer((3, 2), signal)
+    bn.infer(numpy.array([(3, 2)]), signal)
 
     # our inference is correct
     assert list(signal[3, 2]) == [True, False, False, True, False, False]
@@ -66,7 +66,7 @@ def test_compute_error():
     too_much[3, 3] = 0.4
     not_enough[3, 3] = 0.6
 
-    bn.compute_error((3,), signal, too_much, not_enough)
+    bn.compute_error(numpy.array([(3,)]), signal, too_much, not_enough)
 
     assert numpy.allclose(too_much, [
         [.0, .0,  .0, .4, .0, .0],
@@ -104,7 +104,7 @@ def test_comupte_error_discrete():
     signal[2, (0, 2, 4, 6)] = True
     signal[1] = True
 
-    bn.compute_error((4,), signal, too_much, not_enough, dtype=numpy.uint8)
+    bn.compute_error(numpy.array([(4,)]), signal, too_much, not_enough, dtype=numpy.uint8)
 
     assert numpy.equal(too_much, [
         [42,  0,   42,  0,   0,   0,   0, 0],

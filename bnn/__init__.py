@@ -14,41 +14,49 @@ class BN:
             assert len(s) == self.sources_dim
         self.activation_treshold = 0
 
-    def get_absolute_sources_slice(self, position, source_indices):
-        sources_absolute = self.sources[source_indices] + position
+    def get_absolute_sources_slice(self, positions, sources_relative):
+        sources_absolute = sources_relative[:, numpy.newaxis] + positions[numpy.newaxis, :]
         sources_slice = tuple(
-            sources_absolute[:, i]
+            sources_absolute[:, :, i]
             for i in range(self.sources_dim)
         )
         return sources_slice
 
-    def get_inputs(self, position, signal, dtype=None):
-        excitators_slice = self.get_absolute_sources_slice(position, self.excitators)
-        inhibitors_slice = self.get_absolute_sources_slice(position, self.inhibitors)
+    def get_signal_slice(self, positions):
+        positions_slice = tuple(
+            positions[:, i]
+            for i in range(self.sources_dim)
+        )
+        return positions_slice
+
+    def get_inputs(self, positions, signal, dtype=None):
+        excitators_slice = self.get_absolute_sources_slice(positions, self.sources[self.excitators])
+        inhibitors_slice = self.get_absolute_sources_slice(positions, self.sources[self.inhibitors])
         excitations = signal[excitators_slice]
         inhibitions = signal[inhibitors_slice]
         excitation_sum = numpy.sum(excitations, axis=0, dtype=dtype)
         inhibition_sum = numpy.sum(inhibitions, axis=0, dtype=dtype)
         return excitators_slice, inhibitors_slice, excitations, inhibitions, excitation_sum, inhibition_sum
 
-    def infer(self, position, signal, dtype=None):
-        _, _, _, _, excitation_sum, inhibition_sum = self.get_inputs(position, signal, dtype=dtype)
-        signal[position] = (excitation_sum - inhibition_sum) >= self.activation_treshold
+    def infer(self, positions, signal, dtype=None):
+        _, _, _, _, excitation_sum, inhibition_sum = self.get_inputs(positions, signal, dtype=dtype)
+        signal[self.get_signal_slice(positions)] = (excitation_sum - inhibition_sum) >= self.activation_treshold
 
-    def compute_error(self, position, signal, too_much, not_enough, dtype=None):
+    def compute_error(self, positions, signal, too_much, not_enough, dtype=None):
         (
             excitators_slice, inhibitors_slice,
             excitations, inhibitions,
             excitation_sum, inhibition_sum,
-        ) = self.get_inputs(position, signal, dtype=dtype)
+        ) = self.get_inputs(positions, signal, dtype=dtype)
         too_much_contributor_count = excitation_sum + len(self.inhibitors) - inhibition_sum
         not_enough_contributor_count = inhibition_sum + len(self.excitators) - excitation_sum
         if numpy.issubdtype(dtype, numpy.integer):
             div_func = numpy.floor_divide
         else:
             div_func = numpy.divide
-        too_much_contributions = div_func(too_much[position], too_much_contributor_count, dtype=dtype)
-        not_enough_contributions = div_func(not_enough[position], not_enough_contributor_count, dtype=dtype)
+        signal_slice = self.get_signal_slice(positions)
+        too_much_contributions = div_func(too_much[signal_slice], too_much_contributor_count, dtype=dtype)
+        not_enough_contributions = div_func(not_enough[signal_slice], not_enough_contributor_count, dtype=dtype)
         too_much[excitators_slice] += excitations * too_much_contributions
         not_enough[inhibitors_slice] += ~inhibitions * too_much_contributions
         not_enough[excitators_slice] += ~excitations * not_enough_contributions
@@ -59,17 +67,8 @@ class BN:
         too_much, not_enough,
         dtype=None,
     ):
-        sources_absolute = self.sources[:, numpy.newaxis] + positions[numpy.newaxis, :]
-        sources_slice = tuple(
-            sources_absolute[:, :, i]
-            for i in range(self.sources_dim)
-        )
-        source_signal = signal[sources_slice]
-
-        positions_slice = tuple(
-            positions[:, i]
-            for i in range(self.sources_dim)
-        )
+        source_signal = signal[self.get_absolute_sources_slice(positions, self.sources)]
+        positions_slice = self.get_signal_slice(positions)
 
         return (
             numpy.sum(
@@ -124,34 +123,43 @@ class ConvBNN:
         return sample_size
 
     def get_sample_positions(self, sample_size):
-        return product(*(
+        return numpy.array(list(product(*(
             range(self.margin, s - self.margin)
             for s in sample_size
-        ))
+        ))))
 
     def infer(self, signal, dtype=None):
         sample_size = self.get_sample_size(signal)
+        sample_positions = self.get_sample_positions(sample_size)
 
         for i, neuron in tqdm(
             enumerate(self.neurons),
             total=len(self.neurons), desc='infer         ',
         ):
-            for pos in self.get_sample_positions(sample_size):
-                neuron.infer(
-                    (i + self.sample_depth,) + pos,
-                    signal,
-                    dtype=dtype,
-                )
+            pos = numpy.concatenate((
+                [[i + self.sample_depth]] * sample_positions.shape[0],
+                sample_positions,
+            ), axis=1)
+            neuron.infer(
+                pos,
+                signal,
+                dtype=dtype,
+            )
 
     def compute_error(self, signal, too_much, not_enough, dtype=None):
         sample_size = self.get_sample_size(signal)
+        sample_positions = self.get_sample_positions(sample_size)
+
         for i, neuron in tqdm(
             reversed(list(enumerate(self.neurons))),
             total=len(self.neurons), desc='backprop error',
         ):
-            for pos in self.get_sample_positions(sample_size):
-                neuron.compute_error(
-                    (i + self.sample_depth,) + pos,
-                    signal, too_much, not_enough,
-                    dtype=dtype,
-                )
+            pos = numpy.concatenate((
+                [[i + self.sample_depth]] * sample_positions.shape[0],
+                sample_positions,
+            ), axis=1)
+            neuron.compute_error(
+                pos,
+                signal, too_much, not_enough,
+                dtype=dtype,
+            )
