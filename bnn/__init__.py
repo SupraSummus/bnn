@@ -1,6 +1,7 @@
 from itertools import product
 
 import numpy
+from tqdm import tqdm
 
 
 class BN:
@@ -30,8 +31,8 @@ class BN:
         inhibition_sum = numpy.sum(inhibitions, axis=0, dtype=dtype)
         return excitators_slice, inhibitors_slice, excitations, inhibitions, excitation_sum, inhibition_sum
 
-    def infer(self, position, signal):
-        _, _, _, _, excitation_sum, inhibition_sum = self.get_inputs(position, signal)
+    def infer(self, position, signal, dtype=None):
+        _, _, _, _, excitation_sum, inhibition_sum = self.get_inputs(position, signal, dtype=dtype)
         signal[position] = (excitation_sum - inhibition_sum) >= self.activation_treshold
 
     def compute_error(self, position, signal, too_much, not_enough, dtype=None):
@@ -53,14 +54,35 @@ class BN:
         not_enough[excitators_slice] += ~excitations * not_enough_contributions
         too_much[inhibitors_slice] += inhibitions * not_enough_contributions
 
-    def compute_sources_error_correlation(
-        self, position, signal,
+    def get_signal_error_correlation(
+        self, positions, signal,
         too_much, not_enough,
-        too_much_correlation, not_enough_correlation,
+        dtype=None,
     ):
-        source_signal = signal[self.sources + position]
-        too_much_correlation += too_much[position] * source_signal
-        not_enough_correlation += not_enough[position] * source_signal
+        sources_absolute = self.sources[:, numpy.newaxis] + positions[numpy.newaxis, :]
+        sources_slice = tuple(
+            sources_absolute[:, :, i]
+            for i in range(self.sources_dim)
+        )
+        source_signal = signal[sources_slice]
+
+        positions_slice = tuple(
+            positions[:, i]
+            for i in range(self.sources_dim)
+        )
+
+        return (
+            numpy.sum(
+                too_much[positions_slice] * source_signal,
+                axis=1,
+                dtype=dtype,
+            ),
+            numpy.sum(
+                not_enough[positions_slice] * source_signal,
+                axis=1,
+                dtype=dtype,
+            ),
+        )
 
 
 class ConvBNN:
@@ -86,15 +108,13 @@ class ConvBNN:
                 **kwargs,
             ))
 
-    def make_workplace(self, input):
-        sample_depth, *sample_size, batch_size = input.shape
-        assert sample_depth == self.sample_depth
+    def make_workplace(self, sample_size, batch_size, dtype=None):
         assert len(sample_size) == self.dim
         workplace = numpy.zeros((
             self.sample_depth + self.neuron_count,
             *(s + 2 * self.margin for s in sample_size),
             batch_size,
-        ), dtype=bool)
+        ), dtype=dtype)
         return workplace
 
     def get_sample_size(self, workplace):
@@ -109,21 +129,29 @@ class ConvBNN:
             for s in sample_size
         ))
 
-    def infer(self, workplace):
-        sample_size = self.get_sample_size(workplace)
-
-        for i, neuron in enumerate(self.neurons):
-            for pos in self.get_sample_positions(sample_size):
-                neuron.infer((
-                    i + self.sample_depth,
-                    *pos,
-                ), workplace)
-
-    def compute_error(self, signal, too_much, not_enough):
+    def infer(self, signal, dtype=None):
         sample_size = self.get_sample_size(signal)
-        for i, neuron in reversed(enumerate(self.neurons)):
+
+        for i, neuron in tqdm(
+            enumerate(self.neurons),
+            total=len(self.neurons), desc='infer         ',
+        ):
             for pos in self.get_sample_positions(sample_size):
-                neuron.compute_error((
-                    i + self.sample_depth,
-                    *pos,
-                ), signal, too_much, not_enough)
+                neuron.infer(
+                    (i + self.sample_depth,) + pos,
+                    signal,
+                    dtype=dtype,
+                )
+
+    def compute_error(self, signal, too_much, not_enough, dtype=None):
+        sample_size = self.get_sample_size(signal)
+        for i, neuron in tqdm(
+            reversed(list(enumerate(self.neurons))),
+            total=len(self.neurons), desc='backprop error',
+        ):
+            for pos in self.get_sample_positions(sample_size):
+                neuron.compute_error(
+                    (i + self.sample_depth,) + pos,
+                    signal, too_much, not_enough,
+                    dtype=dtype,
+                )
