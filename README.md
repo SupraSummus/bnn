@@ -5,3 +5,5 @@
 
     mnist_get_data.sh
     mnist_preview
+
+    python -m bnn.mnist
