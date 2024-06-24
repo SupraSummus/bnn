@@ -19,10 +19,12 @@ For the training, I envision this like that: a neuron can be wrong in two distin
 2. It is active but should be inactive -- aka "too much excitation"
 
 This all assumes we are learning on training data - input and desired output pairs.
+
 To correct case 1, we have options:
 * 1.1 - We can add an exciting synapse to some input that is active
 * 1.2 - We can remove an inhibiting synapse to some input that is active
 * 1.3 - We can decrease the threshold
+
 To correct case 2, options are:
 * 2.1 - We can add an inhibiting synapse to an active input
 * 2.2 - We can remove an exciting synapse to some input that is active
@@ -31,6 +33,7 @@ To correct case 2, options are:
 And this is for this local layer. We can do a sort of backpropagation to the previous layer. That is:
 * 1.4 - We can tell the neuron to which we have an exciting synapse, but which is not firing, that it is excited not enough
 * 1.5 - We can tell the neuron to which we have an inhibiting synapse and it is firing, that it is excited too much
+
 Similar in case 2:
 * 2.4 - We can select the neuron to which we have an inhibiting synapse, but which is not firing, that it is excited not enough
 * 2.5 - We can select an active neuron to which we have an exciting synapse that it is excited too much
