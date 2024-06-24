@@ -42,3 +42,5 @@ So to summarize, we have three classes of correcting our two kinds of errors ("t
 * Adjust our synapses
 * Adjust our threshold
 * Tell neurons that provide inputs to our existing synapses that they made an error ("too much" or "not enough")
+
+As for batch learning, yes there is a way to do it. Istead of performing learining steps for every example and randomizing here and there synapses to add or remove etc, we can compute propabilites of synapse add / delete opration and agregate them across many examples. Also in a single example, the downpropagated signal "too much"/"not enough" can we aggregated in multiple pathways, because the neuron in layer X can get feedback from multiple neuronsin layer X+1
