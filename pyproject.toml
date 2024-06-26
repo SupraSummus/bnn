@@ -5,15 +5,24 @@ description = ""
 authors = ["Jan Rydzewski <flegmer@gmail.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.9"
-python-mnist = "^0.7"
-numpy = "^1.21.1"
-matplotlib = "^3.4.2"
-tqdm = "^4.62.2"
+python = "==3.12.*"
+numpy = "==2.*"
 
-[tool.poetry.dev-dependencies]
-pytest = "^6.2.5"
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+python-mnist = "*"
+tqdm = "*"
+black = "*"
+flake8 = "*"
+flake8-isort = "*"
+flake8-pyproject = "*"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+skip-string-normalization = true
+
+[tool.flake8]
+ignore = ["E501"]
