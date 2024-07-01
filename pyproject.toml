@@ -26,3 +26,6 @@ skip-string-normalization = true
 
 [tool.flake8]
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py", "*_tests.py", "test.py", "tests.py"]
