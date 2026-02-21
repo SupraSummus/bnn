@@ -44,7 +44,7 @@ class Dense(Layer):
 
         active_excitator_count = np.zeros((inputs.shape[0], self.output_features), dtype=np.float32)
         active_inhibitor_count = np.zeros((inputs.shape[0], self.output_features), dtype=np.float32)
-        outputs = np.zeros((inputs.shape[0], self.output_features), dtype=np.bool)
+        outputs = np.zeros((inputs.shape[0], self.output_features), dtype=np.bool_)
         for i in range(self.output_features):
             active_excitator_count[:, i] = np.sum(inputs[:, self.excitators[i]], axis=1)
             active_inhibitor_count[:, i] = np.sum(inputs[:, self.inhibitors[i]], axis=1)
