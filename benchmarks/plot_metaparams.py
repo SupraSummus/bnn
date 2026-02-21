@@ -34,7 +34,7 @@ def build_network(input_features, n_classes, hidden_sizes, max_synapses):
                 input_features=prev_size,
                 output_features=size,
                 max_synapses=max_synapses,
-                treshold_change_chance=0.1,
+                threshold_change_chance=0.1,
                 synapse_change_chance=0.1,
             )
         )
@@ -44,7 +44,7 @@ def build_network(input_features, n_classes, hidden_sizes, max_synapses):
             input_features=prev_size,
             output_features=n_classes,
             max_synapses=max_synapses,
-            treshold_change_chance=0.1,
+            threshold_change_chance=0.1,
             synapse_change_chance=0.1,
         )
     )

@@ -13,7 +13,7 @@ class Dense(Layer):
         input_features: int,
         output_features: int,
         max_synapses=None,
-        treshold_change_chance=0.1,
+        threshold_change_chance=0.1,
         synapse_change_chance=0.1,
     ):
         self.input_features = input_features
@@ -22,7 +22,7 @@ class Dense(Layer):
         self.max_synapses = max_synapses
         if self.max_synapses is None:
             self.max_synapses = input_features // 10
-        self.treshold_change_chance = treshold_change_chance
+        self.threshold_change_chance = threshold_change_chance
         self.synapse_change_chance = synapse_change_chance
 
         self.excitators: List[List[int]] = [[] for _ in range(output_features)]
@@ -34,7 +34,7 @@ class Dense(Layer):
         self.excitator_potential: ArrayFloat = None
         # Similarly for inhibitor_potential -- only for inhibitory synapses.
         self.inhibitor_potential: ArrayFloat = None
-        # self.treshold_changes[i] stores how much and in which direction the threshold of output i should change
+        # self.threshold_changes[i] stores how much and in which direction the threshold of output i should change
         self.threshold_changes: ArrayFloat = None
         self._reset_state()
 
@@ -118,7 +118,7 @@ class Dense(Layer):
         for i in range(self.output_features):
             change_threshold = 0.01
 
-            if np.random.rand() < self.treshold_change_chance:
+            if np.random.rand() < self.threshold_change_chance:
                 if self.threshold_changes[i] > change_threshold:
                     plus_minus_one = 1
                 elif self.threshold_changes[i] < -change_threshold:
