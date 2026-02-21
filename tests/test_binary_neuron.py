@@ -24,7 +24,7 @@ def test_inference():
         ]),
     )
     bn.excitators = [0, 0, 1, 2]
-    bn.activation_treshold = 2
+    bn.activation_threshold = 2
     signal = numpy.zeros(shape=(5, 5, 6), dtype=bool)
     signal[2, 2, 0] = True
     signal[2, 0, 1] = True

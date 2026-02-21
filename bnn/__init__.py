@@ -12,7 +12,7 @@ class BN:
         self.sources = sources
         for s in self.sources:
             assert len(s) == self.sources_dim
-        self.activation_treshold = 0
+        self.activation_threshold = 0
 
     def get_absolute_sources_slice(self, positions, sources_relative):
         sources_absolute = sources_relative[:, numpy.newaxis] + positions[numpy.newaxis, :]
@@ -40,7 +40,7 @@ class BN:
 
     def infer(self, positions, signal, dtype=None):
         _, _, _, _, excitation_sum, inhibition_sum = self.get_inputs(positions, signal, dtype=dtype)
-        signal[self.get_signal_slice(positions)] = (excitation_sum - inhibition_sum) >= self.activation_treshold
+        signal[self.get_signal_slice(positions)] = (excitation_sum - inhibition_sum) >= self.activation_threshold
 
     def compute_error(self, positions, signal, too_much, not_enough, dtype=None):
         (
