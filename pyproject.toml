@@ -17,6 +17,7 @@ flake8 = "*"
 flake8-isort = "*"
 flake8-pyproject = "*"
 scikit-learn = "*"
+matplotlib = "*"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
