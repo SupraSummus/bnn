@@ -102,17 +102,30 @@ Parity is scored on the full truth table.
 
 | Dataset       | Majority | LogReg | DTree | RForest | Tsetlin | Dense | Counter |
 |---------------|---------:|-------:|------:|--------:|--------:|------:|--------:|
-| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.844 |
-| Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 0.993 |
-| Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.843 |
-| Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.909 |
-| Parity-4      | 0.500 | 0.500 | 1.000 | 1.000 | 1.000 | 0.500 | 0.979 |
-| Parity-8      | 0.500 | 0.500 | 1.000 | 1.000 | 0.510 | 0.500 | 0.839 |
-| Parity-16     | 0.500 | 0.500 | 1.000 | 1.000 | 0.500 | 0.500 | 0.507 |
+| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.842 |
+| Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 0.995 |
+| Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.844 |
+| Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.915 |
+| Parity-4      | 0.500 | 0.500 | 1.000 | 1.000 | 1.000 | 0.500 | 1.000 |
+| Parity-8      | 0.500 | 0.500 | 1.000 | 1.000 | 0.510 | 0.500 | 0.856 |
+| Parity-16     | 0.500 | 0.500 | 1.000 | 1.000 | 0.500 | 0.500 | 0.574 |
 
 ¹ trained on 5000 samples to keep the run short.
 Counter uses no hidden layer on Fashion-MNIST, Adult and Breast Cancer, where one still hurts.
-It trains 2-13x faster than Dense.
+Over 10 seeds: parity-4 1.000, parity-8 0.90 ± 0.05, parity-16 0.58 ± 0.04.
+
+## Speed
+
+`CounterDense` trains in numba kernels (`bnn/counter_kernels.py`);
+`bnn/counter_reference.py` is the same rule in numpy, and the tests check the two agree bit for bit.
+
+* Synapses and binary activity are packed into 64-bit words:
+  a neuron's input sum is `popcount(x & exc) - popcount(x & inh)`.
+* Backward looks only at outputs with an error signal (all of them in the output layer, which keeps a margin)
+  and touches whole input rows only for outputs that vote or blame.
+* A whole epoch is one compiled call (`counter.train_epoch`); per batch, the numpy glue cost more than the kernels.
+* Each layer draws from its own xoshiro256+ stream, one number per nonzero error signal,
+  so an epoch in one call and batch by batch give the same result.
 
 ## Biological parallels
 

@@ -1,3 +1,4 @@
 data/*
 *.pyc
 benchmarks/metaparams.png
+__pycache__/

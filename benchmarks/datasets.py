@@ -72,7 +72,8 @@ def fashion_bits(X):
     Two bits per pixel: any ink (> 0) and dark (> 128). Faint textures and
     outlines live below 128; a single > 128 bit loses ~0.07 accuracy.
     """
-    return np.concatenate([X > 0, X > 128], axis=1)
+    # row-major: training gathers random rows
+    return np.ascontiguousarray(np.concatenate([X > 0, X > 128], axis=1))
 
 
 def load_fashion_mnist():
