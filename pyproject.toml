@@ -7,6 +7,7 @@ authors = ["Jan Rydzewski <flegmer@gmail.com>"]
 [tool.poetry.dependencies]
 python = "==3.12.*"
 numpy = "==2.*"
+numba = ">=0.61"  # compiled CounterDense kernels
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

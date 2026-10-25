@@ -9,6 +9,7 @@ import numpy as np
 
 from bnn.abstract import Sequence
 from bnn.counter import CounterDense
+from bnn.counter import train_epoch as train_counter_epoch
 from bnn.dense import Dense
 
 
@@ -62,6 +63,11 @@ def train_epoch(network, X_train, y_train, n_classes, batch_size=64, rng=None):
         rng = np.random.default_rng()
     n_samples = X_train.shape[0]
     indices = rng.permutation(n_samples)
+
+    if all(type(layer) is CounterDense for layer in network.layers):
+        targets = np.arange(n_classes) == y_train[:, np.newaxis]
+        train_counter_epoch(network.layers, X_train, targets, indices, batch_size)
+        return
 
     for start in range(0, n_samples, batch_size):
         end = min(start + batch_size, n_samples)

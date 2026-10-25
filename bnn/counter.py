@@ -8,13 +8,20 @@ consistent evidence. Thresholds get the same treatment.
 
 Learned state is integer. Floats only carry error strengths between layers and
 are turned into binary events (stochastic rounding) before they touch a counter.
+
+The heavy lifting is in compiled kernels (`counter_kernels`, numba, bit-packed
+synapses); `counter_reference` has the same rule in plain numpy.
 """
 
 from typing import Optional
 
 import numpy as np
+from numba.typed import List
 
+from . import counter_kernels as kernels
 from .abstract import ArrayBool, ArrayFloat, Layer
+
+NO_LIMIT = np.iinfo(np.int32).max
 
 
 class CounterDense(Layer):
@@ -60,10 +67,12 @@ class CounterDense(Layer):
 
         if init_range is None:
             init_range = connect_level + connect_level // 2
-        self.counters = self.rng.integers(
-            -init_range, init_range + 1,
-            size=(output_features, input_features),
+        self.counters = np.clip(
+            self.rng.integers(-init_range, init_range + 1, size=(output_features, input_features)),
+            -counter_max, counter_max,
         ).astype(np.int16)
+        # the kernels' own generator, seeded from rng: they draw one number per nonzero error signal
+        self.rng_state = self.rng.integers(0, 2**64, size=4, dtype=np.uint64) | np.uint64(1)
         self.thresholds = np.zeros(output_features, dtype=np.int32)
         self.threshold_counters = np.zeros(output_features, dtype=np.int32)
         self.tally = None
@@ -71,89 +80,40 @@ class CounterDense(Layer):
         self._reset_state()
 
     def margins(self, inputs: ArrayBool) -> np.ndarray:
-        # float32 matmul is exact for integers below 2**24 and much faster than numpy's integer matmul
-        sums = inputs.astype(np.float32) @ self.weights.T.astype(np.float32)
-        return sums.astype(np.int32) - self.thresholds
+        return kernels.margins(self._pack(inputs), self.exc, self.inh, self.thresholds)
 
     def forward(self, inputs: ArrayBool):
         assert inputs.ndim == 2, f"Expected 2D input, got {inputs.ndim}D"
         assert inputs.shape[1] == self.input_features, f"Expected {self.input_features} input features, got {inputs.shape[1]}"
-        margins = self.margins(inputs)
-        return margins >= 0, (inputs, margins)
+        bits = self._pack(inputs)
+        margins = kernels.margins(bits, self.exc, self.inh, self.thresholds)
+        return margins >= 0, (inputs, bits, margins)
 
     def backward(self, state, too_much: ArrayFloat, not_enough: ArrayFloat):
-        inputs, margins = state
-        outputs = margins >= 0
+        """
+        Net out "too much" and "not enough", turn what asks for a flip into binary events,
+        vote on counters and thresholds, and pass blame to the inputs that could make the flip.
+        `ReferenceCounterDense.backward` spells the rule out in array form.
+        """
+        inputs, bits, margins = state
         assert too_much.shape == margins.shape
         assert not_enough.shape == margins.shape
-
-        # Net out conflicting requests, keep those asking for an actual flip, sample binary events.
         wish = np.asarray(not_enough, dtype=np.float32) - np.asarray(too_much, dtype=np.float32)
-        p = self.rng.random(margins.shape)
-        want_on = ~outputs & (p < wish)
-        want_off = outputs & (p < -wish)
-        # 0 means a single input change would flip the output
-        distance = np.where(outputs, margins, -margins - 1)
-        if self.accept_distance is not None:
-            want_on &= distance <= self.accept_distance
-            want_off &= distance <= self.accept_distance
-
-        # Local learning, perceptron on +-1 coded inputs: for a neuron that should turn on,
-        # active inputs move towards excitation and inactive ones towards inhibition.
-        x = inputs.astype(np.float32)
-        on_votes = want_on
-        off_votes = want_off
-        if self.stabilize_margin > 0:
-            fragile = (distance < self.stabilize_margin) & ~want_on & ~want_off
-            on_votes = on_votes | (fragile & outputs)
-            off_votes = off_votes | (fragile & ~outputs)
-        votes = on_votes.astype(np.float32) - off_votes.astype(np.float32)
-        self.counter_delta += (votes.T @ (2 * x - 1)).astype(np.int32)
-        self.threshold_delta += off_votes.sum(axis=0) - on_votes.sum(axis=0)
-
-        # Blame inputs. Turning on needs `-margin` more net excitation, turning off `margin + 1` less.
-        # Inputs that can each provide one unit:
-        #   turn on:  inactive exciters (should activate), active inhibitors (should deactivate)
-        #   turn off: active exciters (should deactivate), inactive inhibitors (should activate)
-        exc = (self.weights > 0).astype(np.float32)
-        inh = (self.weights < 0).astype(np.float32)
-        nx = 1.0 - x
-        needed = np.where(want_on, -margins, margins + 1)
-        helpers = np.where(want_on, nx @ exc.T + x @ inh.T, x @ exc.T + nx @ inh.T)
-        fixable = (want_on | want_off) & (needed <= self.backprop_margin) & (needed <= helpers)
-        # each helper gets the probability it is one of the `needed` flips
-        share = np.divide(needed, helpers, out=np.zeros(needed.shape, dtype=np.float32), where=fixable)
-        share_on = np.where(want_on, share, 0).astype(np.float32)
-        share_off = np.where(want_off, share, 0).astype(np.float32)
-        to_activate = share_on @ exc + share_off @ inh
-        to_deactivate = share_on @ inh + share_off @ exc
-
-        # Collateral damage: an input flip also flips every currently fine output sitting right at its
-        # threshold (margin 0 drops on a -1 change, margin -1 rises on a +1 change).
-        fine = ~(want_on | want_off)
-        drop = (fine & (margins == 0)).astype(np.float32)
-        rise = (fine & (margins == -1)).astype(np.float32)
-        input_not_enough = nx * np.maximum(to_activate - drop @ inh - rise @ exc, 0)
-        input_too_much = x * np.maximum(to_deactivate - drop @ exc - rise @ inh, 0)
-        return input_too_much, input_not_enough
+        _, _, _, backprop_margin, accept_distance, stabilize_margin = self._params()
+        return kernels.backward(
+            np.ascontiguousarray(inputs, dtype=np.bool_), bits, margins, wish,
+            self.weights, self.exc, self.inh,
+            backprop_margin, accept_distance, stabilize_margin, True,
+            self.counter_delta, self.threshold_delta, self.touched, self.rng_state,
+        )
 
     def update(self):
-        self.counters = np.clip(
-            self.counters.astype(np.int32) + self.counter_delta,
-            -self.counter_max, self.counter_max,
-        ).astype(np.int16)
-
-        self.threshold_counters += self.threshold_delta
-        steps = np.fix(self.threshold_counters / self.threshold_level).astype(np.int32)
-        self.thresholds += steps
-        self.threshold_counters -= steps * self.threshold_level
-
-        self._sync_weights()
-        self._reset_state()
-        if self.tally is not None:
-            self.tally[0] += self.weights
-            self.tally[1] += self.thresholds
-            self.tally[2] += 1
+        kernels.update(
+            self.counters, self.counter_delta, self.touched, self.counter_max, self.connect_level,
+            self.weights, self.exc, self.inh,
+            self.thresholds, self.threshold_counters, self.threshold_delta, self.threshold_level,
+        )
+        self._add_to_tally()
 
     def start_tally(self):
         """Count the visible state of every synapse and threshold over the following updates."""
@@ -172,12 +132,62 @@ class CounterDense(Layer):
         self.tally = None
         self._sync_weights()
 
+    def _params(self):
+        """Scalar settings in the order kernels.train_epoch unpacks them."""
+        accept_distance = NO_LIMIT if self.accept_distance is None else self.accept_distance
+        return (
+            self.connect_level, self.counter_max, self.threshold_level,
+            self.backprop_margin, accept_distance, self.stabilize_margin,
+        )
+
+    def _add_to_tally(self):
+        if self.tally is not None:
+            self.tally[0] += self.weights
+            self.tally[1] += self.thresholds
+            self.tally[2] += 1
+
+    def _pack(self, inputs):
+        return kernels.pack_bits(np.ascontiguousarray(inputs, dtype=np.bool_))
+
     def _sync_weights(self):
+        """Refresh the visible synapses after counters were set from outside the update."""
         self.weights = (
             (self.counters >= self.connect_level).astype(np.int8)
             - (self.counters <= -self.connect_level).astype(np.int8)
         )
+        self.exc = kernels.pack_bits(self.weights > 0)
+        self.inh = kernels.pack_bits(self.weights < 0)
 
     def _reset_state(self):
+        # the update kernel clears these as it applies them
         self.counter_delta = np.zeros((self.output_features, self.input_features), dtype=np.int32)
         self.threshold_delta = np.zeros(self.output_features, dtype=np.int32)
+        self.touched = np.zeros(self.output_features, dtype=np.bool_)  # rows with counter votes
+
+
+def train_epoch(layers, inputs: ArrayBool, targets: ArrayBool, order: np.ndarray, batch_size: int):
+    """
+    One epoch of a stack of CounterDense layers as a single compiled loop.
+    Same result as, for each batch of `order`: forward through the layers,
+    backward with too_much = out & ~targets and not_enough = ~out & targets, update
+    (minus the first layer's input blame, which nobody reads).
+    Tallies layers that have started one.
+    """
+    tallying = layers[0].tally is not None
+    assert all((layer.tally is not None) == tallying for layer in layers)
+
+    def typed(values):
+        return List([np.asarray(value) for value in values])
+
+    no_tally = [np.zeros((0, 0), dtype=np.int32), np.zeros(0, dtype=np.int32)]
+    tallies = [layer.tally if tallying else no_tally for layer in layers]
+    updates = kernels.train_epoch(
+        np.ascontiguousarray(inputs, dtype=np.bool_), np.ascontiguousarray(targets, dtype=np.bool_),
+        np.asarray(order, dtype=np.int64), batch_size,
+        List([tuple(int(v) for v in layer._params()) for layer in layers]),
+        *(typed(getattr(layer, name) for layer in layers) for name in kernels.LAYER_STATE),
+        typed(t[0] for t in tallies), typed(t[1] for t in tallies), tallying,
+    )
+    if tallying:
+        for layer in layers:
+            layer.tally[2] += updates

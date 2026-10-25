@@ -29,13 +29,18 @@
 * `threshold_level=4` collapses an output layer reading a wide sparse code
   (1024 units, 32 active: 0.1-0.5 accuracy, vs 0.72 with 1),
   while parity wants 4. How it should depend on fan-in is open.
-* Parity-4 is fully solved in about 80% of seeds, parity-8 in some (0.84 mean with consolidation), parity-16 never.
+* Parity-4 is solved in nearly every seed, parity-8 in some (0.90 mean over 10 seeds), parity-16 never (0.58).
 * Batches sum counter updates, which defeats the hysteresis on wide inputs.
 * A counter sitting at ±`connect_level` toggles its synapse on every vote, so there's no real hysteresis.
   Resetting the counter after a change (Bop) helps wide hidden layers but hurts parity-4 (9/10 → 3/10 seeds solved).
 * No single counter scale works everywhere (see README).
 
 ## Code
+
+* Kernels are single-threaded; benchmarks use the cores by running models side by side.
+  For one big model, `margins` parallelizes over samples (prange) and the counter votes over outputs.
+* `CounterDense.forward/backward/update` now serve only tests and mixing with other layer types;
+  training goes through `counter.train_epoch`. If no other layer type comes back, the per-batch path could go.
 
 * `Dense` and the old `BN`/`ConvBNN` (`bnn/__init__.py`, used by `bnn/mnist.py`) are now dominated by `CounterDense`.
   Decide whether to keep them as history or remove.
