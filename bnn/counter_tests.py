@@ -74,3 +74,16 @@ def test_learns_parity_4():
             network.update()
     # a single threshold unit can't get more than 11/16 right
     assert np.mean(network.margins(X).argmax(axis=1) == y) >= 14 / 16
+
+
+def test_consolidate_keeps_average_state():
+    layer = make_layer([[0, 0, 0]], [0])
+    layer.start_tally()
+    for weights, threshold in [([1, -1, 1], 2), ([1, -1, -1], 2), ([0, 0, 1], 3), ([1, -1, -1], 3)]:
+        layer.counters = np.array([weights], dtype=np.int16) * layer.connect_level
+        layer.thresholds[:] = threshold
+        layer.update()
+    layer.consolidate()
+    # +1 three times out of four; -1 three times; +1 and -1 twice each
+    np.testing.assert_array_equal(layer.weights, [[1, -1, 0]])
+    assert layer.thresholds[0] == 2  # 2.5 rounds to even

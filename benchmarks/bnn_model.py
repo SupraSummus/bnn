@@ -111,6 +111,7 @@ def train_and_evaluate(
     model="dense",
     seed=None,
     layer_kwargs=None,
+    consolidate=True,
 ):
     """Build, train, and evaluate a BNN on the given dataset."""
     n_classes = len(np.unique(y_train))
@@ -136,8 +137,14 @@ def train_and_evaluate(
     else:
         raise ValueError(f"Unknown model {model!r}")
 
+    tallied = network.layers if model == "counter" and consolidate else []
     for epoch in range(n_epochs):
+        if epoch == n_epochs - 1:
+            for layer in tallied:
+                layer.start_tally()
         train_epoch(network, X_train, y_train, n_classes, batch_size=batch_size, rng=rng)
+    for layer in tallied:
+        layer.consolidate()
 
     accuracy = evaluate(network, X_test, y_test, n_classes)
     return accuracy
