@@ -80,21 +80,22 @@ Roughly in order of impact:
 
 The counter scale is a trade-off:
 narrow (`connect_level=2`) helps hidden layers learn parity,
-wide (`connect_level=8`) keeps 784-pixel inputs from oscillating.
-Benchmarks set it per dataset.
+wide (`connect_level=8` or 16) keeps wide pixel inputs from oscillating.
+On wide inputs thresholds should also move faster (`threshold_level=1`); parity prefers 4.
+Benchmarks set both per dataset.
 Homeostatic thresholds, sparse potential pools and per-update step caps were tried and didn't help.
 Open problems are in [TODO.md](TODO.md).
 
 ## Benchmark results
 
 `python -m benchmarks.run`.
-Inputs binarized: pixels > 128, one-hot categoricals, thermometer-coded numbers.
+Inputs binarized: two bits per pixel (> 0, > 128), one-hot categoricals, thermometer-coded numbers.
 Stochastic models are averaged over 3 seeds; settings per dataset are in `benchmarks/run.py`.
 Parity is scored on the full truth table.
 
 | Dataset       | Majority | LogReg | DTree | RForest | Tsetlin | Dense | Counter |
 |---------------|---------:|-------:|------:|--------:|--------:|------:|--------:|
-| Fashion-MNIST | 0.100 | 0.789 | 0.722 | 0.831 | 0.674¹ | 0.185 | 0.655 |
+| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.807 |
 | Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 0.996 |
 | Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.819 |
 | Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.924 |

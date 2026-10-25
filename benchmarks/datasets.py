@@ -67,6 +67,14 @@ def _try_fetch_openml(name, version=1):
         return None
 
 
+def fashion_bits(X):
+    """
+    Two bits per pixel: any ink (> 0) and dark (> 128). Faint textures and
+    outlines live below 128; a single > 128 bit loses ~0.07 accuracy.
+    """
+    return np.concatenate([X > 0, X > 128], axis=1)
+
+
 def load_fashion_mnist():
     """
     Load Fashion-MNIST (28x28 images, 10 classes).
@@ -80,9 +88,7 @@ def load_fashion_mnist():
         y = data.target.astype(np.int32)
         X_train, X_test = X[:60000], X[60000:]
         y_train, y_test = y[:60000], y[60000:]
-        X_train = (X_train > 128).astype(np.bool_)
-        X_test = (X_test > 128).astype(np.bool_)
-        return X_train, y_train, X_test, y_test
+        return fashion_bits(X_train), y_train, fashion_bits(X_test), y_test
 
     # Fallback: sklearn digits (8x8 images, 10 classes)
     print("    (using sklearn digits as Fashion-MNIST fallback)")
