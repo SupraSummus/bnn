@@ -1,13 +1,14 @@
 """
 BNN model wrapper for benchmarks.
 
-Wraps the Dense/Sequence layers into a train/evaluate interface
+Wraps the Dense/CounterDense/Sequence layers into a train/evaluate interface
 suitable for the benchmark suite.
 """
 
 import numpy as np
 
 from bnn.abstract import Sequence
+from bnn.counter import CounterDense
 from bnn.dense import Dense
 
 
@@ -38,10 +39,29 @@ def build_network(input_features, n_classes, hidden_sizes=(64, 32)):
     return Sequence(layers)
 
 
-def train_epoch(network, X_train, y_train, n_classes, batch_size=64):
+def build_counter_network(input_features, n_classes, hidden_sizes=(64, 32), rng=None, **layer_kwargs):
+    """
+    Build a CounterDense network for classification.
+
+    Hidden layers only accept flips they can make cheaply (minimal disturbance);
+    the output layer, whose errors are exact, takes them all and also keeps a
+    safety margin on correct answers. `layer_kwargs` go to every layer.
+    """
+    sizes = [input_features, *hidden_sizes]
+    layers = [
+        CounterDense(n_in, n_out, accept_distance=0, rng=rng, **layer_kwargs)
+        for n_in, n_out in zip(sizes, sizes[1:])
+    ]
+    layers.append(CounterDense(sizes[-1], n_classes, stabilize_margin=2, rng=rng, **layer_kwargs))
+    return Sequence(layers)
+
+
+def train_epoch(network, X_train, y_train, n_classes, batch_size=64, rng=None):
     """Train the network for one epoch."""
+    if rng is None:
+        rng = np.random.default_rng()
     n_samples = X_train.shape[0]
-    indices = np.random.permutation(n_samples)
+    indices = rng.permutation(n_samples)
 
     for start in range(0, n_samples, batch_size):
         end = min(start + batch_size, n_samples)
@@ -88,19 +108,36 @@ def train_and_evaluate(
     n_epochs=20,
     hidden_sizes=(64, 32),
     batch_size=64,
+    model="dense",
+    seed=None,
+    layer_kwargs=None,
 ):
     """Build, train, and evaluate a BNN on the given dataset."""
     n_classes = len(np.unique(y_train))
     input_features = X_train.shape[1]
+    rng = np.random.default_rng(seed)
 
-    network = build_network(
-        input_features=input_features,
-        n_classes=n_classes,
-        hidden_sizes=hidden_sizes,
-    )
+    if model == "dense":
+        if seed is not None:
+            np.random.seed(seed)  # Dense draws from the global generator
+        network = build_network(
+            input_features=input_features,
+            n_classes=n_classes,
+            hidden_sizes=hidden_sizes,
+        )
+    elif model == "counter":
+        network = build_counter_network(
+            input_features=input_features,
+            n_classes=n_classes,
+            hidden_sizes=hidden_sizes,
+            rng=rng,
+            **(layer_kwargs or {}),
+        )
+    else:
+        raise ValueError(f"Unknown model {model!r}")
 
     for epoch in range(n_epochs):
-        train_epoch(network, X_train, y_train, n_classes, batch_size=batch_size)
+        train_epoch(network, X_train, y_train, n_classes, batch_size=batch_size, rng=rng)
 
     accuracy = evaluate(network, X_test, y_test, n_classes)
     return accuracy
