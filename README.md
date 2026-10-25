@@ -94,7 +94,7 @@ Parity is scored on the full truth table.
 
 | Dataset       | Majority | LogReg | DTree | RForest | Tsetlin | Dense | Counter |
 |---------------|---------:|-------:|------:|--------:|--------:|------:|--------:|
-| Fashion-MNIST | 0.100 | 0.789 | 0.722 | 0.831 | 0.674¹ | 0.194 | 0.655 |
+| Fashion-MNIST | 0.100 | 0.789 | 0.722 | 0.831 | 0.674¹ | 0.185 | 0.655 |
 | Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 0.996 |
 | Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.819 |
 | Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.924 |
@@ -104,7 +104,7 @@ Parity is scored on the full truth table.
 
 ¹ trained on 5000 samples to keep the run short.
 Counter uses no hidden layer on Fashion-MNIST, Adult and Breast Cancer, where one still hurts.
-It trains 5-20x faster than Dense (vectorized matmuls instead of per-neuron loops).
+It trains 2-13x faster than Dense.
 
 ## Biological parallels
 

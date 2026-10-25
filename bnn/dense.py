@@ -1,3 +1,4 @@
+import itertools
 from typing import List, Tuple
 
 import numpy as np
@@ -42,15 +43,17 @@ class Dense(Layer):
         assert inputs.ndim == 2, f"Expected 2D input, got {inputs.ndim}D"
         assert inputs.shape[1] == self.input_features, f"Expected {self.input_features} input features, got {inputs.shape[1]}"
 
-        active_excitator_count = np.zeros((inputs.shape[0], self.output_features), dtype=np.float32)
-        active_inhibitor_count = np.zeros((inputs.shape[0], self.output_features), dtype=np.float32)
-        outputs = np.zeros((inputs.shape[0], self.output_features), dtype=np.bool_)
-        for i in range(self.output_features):
-            active_excitator_count[:, i] = np.sum(inputs[:, self.excitators[i]], axis=1)
-            active_inhibitor_count[:, i] = np.sum(inputs[:, self.inhibitors[i]], axis=1)
-            outputs[:, i] = (active_excitator_count[:, i] - active_inhibitor_count[:, i]) >= self.thresholds[i]
+        active_excitator_count = self._count_active(inputs, self.excitators)
+        active_inhibitor_count = self._count_active(inputs, self.inhibitors)
+        outputs = (active_excitator_count - active_inhibitor_count) >= self.thresholds
 
         return outputs, (inputs, active_excitator_count, active_inhibitor_count)
+
+    def _count_active(self, inputs: ArrayBool, synapses: List[List[int]]) -> ArrayFloat:
+        sources, owners = _flatten(synapses)
+        counts = np.zeros((inputs.shape[0], self.output_features), dtype=np.float32)
+        _scatter_add(counts, owners, inputs[:, sources])
+        return counts
 
     def margins(self, inputs: ArrayBool) -> np.ndarray:
         _, (_, active_excitator_count, active_inhibitor_count) = self.forward(inputs)
@@ -83,37 +86,39 @@ class Dense(Layer):
             (inputs.shape[0], self.input_features), dtype=np.float32
         )
 
-        for i in range(self.output_features):
-            excitations = inputs[:, self.excitators[i]]
-            inhibitions = inputs[:, self.inhibitors[i]]
+        # How many inputs can we blame for the "too much" feedback?
+        # Well, we can blame 1) all excitatory synapses that are active and 2) all inhibitory synapses that are inactive
+        # Point 2 is equal to the difference between the number of all inhibitory synapses and active inhibitory synapses
+        inhibitor_count = np.array([len(s) for s in self.inhibitors], dtype=np.float32)
+        inactive_inhibitor_count = inhibitor_count - active_inhibitor_count
+        too_much_contributor_count = active_excitator_count + inactive_inhibitor_count
+        too_much_contributions = np.divide(
+            too_much, too_much_contributor_count,
+            out=np.zeros_like(too_much_contributor_count),
+            where=too_much_contributor_count != 0,
+        )
 
-            # How many inputs can we blame for the "too much" feedback?
-            # Well, we can blame 1) all excitatory synapses that are active and 2) all inhibitory synapses that are inactive
-            # Point 2 is equal to the difference between the number of all inhibitory synapses and active inhibitory synapses
-            inhibitor_count = len(self.inhibitors[i])
-            inactive_inhibitor_count = inhibitor_count - active_inhibitor_count[:, i]
-            too_much_contributor_count = active_excitator_count[:, i] + inactive_inhibitor_count
-            too_much_contributions = np.divide(
-                too_much[:, i], too_much_contributor_count,
-                out=np.zeros_like(too_much_contributor_count),
-                where=too_much_contributor_count != 0,
-            )
-            input_too_much[:, self.excitators[i]] += excitations * too_much_contributions[:, np.newaxis]
-            input_not_enough[:, self.inhibitors[i]] += ~inhibitions * too_much_contributions[:, np.newaxis]
+        # And similarly for not enough feedback
+        # 1) blame all excitatory synapses that are inactive and
+        # 2) blame all inhibitory synapses that are active
+        excitator_count = np.array([len(s) for s in self.excitators], dtype=np.float32)
+        inactive_excitator_count = excitator_count - active_excitator_count
+        not_enough_contributor_count = active_inhibitor_count + inactive_excitator_count
+        not_enough_contributions = np.divide(
+            not_enough, not_enough_contributor_count,
+            out=np.zeros_like(not_enough_contributor_count),
+            where=not_enough_contributor_count != 0,
+        )
 
-            # And similarly for not enough feedback
-            # 1) blame all excitatory synapses that are inactive and
-            # 2) blame all inhibitory synapses that are active
-            excitator_count = len(self.excitators[i])
-            inactive_excitator_count = excitator_count - active_excitator_count[:, i]
-            not_enough_contributor_count = active_inhibitor_count[:, i] + inactive_excitator_count
-            not_enough_contributions = np.divide(
-                not_enough[:, i], not_enough_contributor_count,
-                out=np.zeros_like(not_enough_contributor_count),
-                where=not_enough_contributor_count != 0,
-            )
-            input_not_enough[:, self.excitators[i]] += ~excitations * not_enough_contributions[:, np.newaxis]
-            input_too_much[:, self.inhibitors[i]] += inhibitions * not_enough_contributions[:, np.newaxis]
+        # A synapse listed twice counts twice above but is blamed once (see TODO.md).
+        exc, exc_owners = _flatten(self.excitators, unique=True)
+        inh, inh_owners = _flatten(self.inhibitors, unique=True)
+        excitations = inputs[:, exc]
+        inhibitions = inputs[:, inh]
+        _scatter_add(input_too_much, exc, excitations * too_much_contributions[:, exc_owners])
+        _scatter_add(input_not_enough, inh, ~inhibitions * too_much_contributions[:, inh_owners])
+        _scatter_add(input_not_enough, exc, ~excitations * not_enough_contributions[:, exc_owners])
+        _scatter_add(input_too_much, inh, inhibitions * not_enough_contributions[:, inh_owners])
 
         return (
             input_too_much,
@@ -196,3 +201,20 @@ def normalize_synapses(excitators, inhibitors, max_synapses):
         new_inhibitors.pop(np.random.randint(0, len(new_inhibitors)))
 
     return new_excitators, new_inhibitors
+
+
+def _flatten(synapses: List[List[int]], unique=False) -> Tuple[ArrayInt, ArrayInt]:
+    """Per-output synapse lists as flat arrays: input ids and the output each one belongs to."""
+    lengths = [len(s) for s in synapses]
+    sources = np.fromiter(itertools.chain.from_iterable(synapses), dtype=np.intp, count=sum(lengths))
+    owners = np.repeat(np.arange(len(synapses)), lengths)
+    if unique and len(sources):
+        width = sources.max() + 1
+        owners, sources = np.divmod(np.unique(owners * width + sources), width)
+    return sources, owners
+
+
+def _scatter_add(out: ArrayFloat, columns: ArrayInt, values: np.ndarray):
+    """out[:, columns] += values, summing repeated columns. Much faster than np.add.at on 2D."""
+    bins = (np.arange(out.shape[0])[:, np.newaxis] * out.shape[1] + columns).ravel()
+    out += np.bincount(bins, weights=values.ravel(), minlength=out.size).reshape(out.shape)
