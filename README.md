@@ -77,6 +77,13 @@ Roughly in order of impact:
    Together with dense initial wiring, this is what made parity learnable.
 5. **Output margin** (`stabilize_margin`): correct but fragile outputs get reinforced.
 6. **Classes picked by margin**, not argmax over binary outputs (ties went to class 0).
+7. **Consolidation.**
+   The state after the last update is a noisy sample:
+   test accuracy on Fashion-MNIST swung by ±0.03 from epoch to epoch.
+   So the last epoch is tallied, and each synapse keeps its average state (rounded to -1/0/1),
+   each threshold its average.
+   The result is still ternary: +0.04 on Fashion-MNIST, +0.02 on Adult, +0.19 on parity-8,
+   -0.015 on Breast Cancer (455 samples).
 
 The counter scale is a trade-off:
 narrow (`connect_level=2`) helps hidden layers learn parity,
@@ -95,13 +102,13 @@ Parity is scored on the full truth table.
 
 | Dataset       | Majority | LogReg | DTree | RForest | Tsetlin | Dense | Counter |
 |---------------|---------:|-------:|------:|--------:|--------:|------:|--------:|
-| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.807 |
-| Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 0.996 |
-| Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.819 |
-| Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.924 |
+| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.844 |
+| Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 0.993 |
+| Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.843 |
+| Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.909 |
 | Parity-4      | 0.500 | 0.500 | 1.000 | 1.000 | 1.000 | 0.500 | 0.979 |
-| Parity-8      | 0.500 | 0.500 | 1.000 | 1.000 | 0.510 | 0.500 | 0.645 |
-| Parity-16     | 0.500 | 0.500 | 1.000 | 1.000 | 0.500 | 0.500 | 0.500 |
+| Parity-8      | 0.500 | 0.500 | 1.000 | 1.000 | 0.510 | 0.500 | 0.839 |
+| Parity-16     | 0.500 | 0.500 | 1.000 | 1.000 | 0.500 | 0.500 | 0.507 |
 
 ¹ trained on 5000 samples to keep the run short.
 Counter uses no hidden layer on Fashion-MNIST, Adult and Breast Cancer, where one still hurts.
@@ -109,7 +116,8 @@ It trains 2-13x faster than Dense.
 
 ## Biological parallels
 
-* Counter under a binary synapse ≈ synaptic consolidation; HTM calls it permanence.
+* Counter under a binary synapse ≈ HTM's permanence: a synapse changes only after repeated evidence.
+* Fast learning followed by keeping the average state ≈ synaptic consolidation.
 * Updates use only the neuron's inputs, its own margin and a signal from above ≈ three-factor learning rules.
 * Minimal disturbance: only neurons near threshold change, which is where a real neuron is sensitive anyway.
 

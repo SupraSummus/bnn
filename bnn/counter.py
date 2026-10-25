@@ -66,6 +66,7 @@ class CounterDense(Layer):
         ).astype(np.int16)
         self.thresholds = np.zeros(output_features, dtype=np.int32)
         self.threshold_counters = np.zeros(output_features, dtype=np.int32)
+        self.tally = None
         self._sync_weights()
         self._reset_state()
 
@@ -149,6 +150,27 @@ class CounterDense(Layer):
 
         self._sync_weights()
         self._reset_state()
+        if self.tally is not None:
+            self.tally[0] += self.weights
+            self.tally[1] += self.thresholds
+            self.tally[2] += 1
+
+    def start_tally(self):
+        """Count the visible state of every synapse and threshold over the following updates."""
+        self.tally = [np.zeros(self.weights.shape, dtype=np.int32), np.zeros_like(self.thresholds), 0]
+
+    def consolidate(self):
+        """
+        Keep each synapse's average state over the tally (rounded to -1/0/1)
+        and the average threshold. The last state of a perceptron-like learner
+        is a noisy sample; the average is what it converged around.
+        Counters are reset to just past connect_level.
+        """
+        weights, thresholds, n = self.tally
+        self.counters = (np.sign(weights) * (2 * np.abs(weights) >= n) * self.connect_level).astype(np.int16)
+        self.thresholds = np.round(thresholds / n).astype(np.int32)
+        self.tally = None
+        self._sync_weights()
 
     def _sync_weights(self):
         self.weights = (
