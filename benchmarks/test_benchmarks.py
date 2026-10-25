@@ -13,6 +13,7 @@ from benchmarks.datasets import (
     binarize_continuous,
     load_breast_cancer_dataset,
     load_parity,
+    thermometer,
 )
 
 
@@ -25,10 +26,20 @@ def test_binarize_continuous():
 
 def test_load_parity_4():
     X_train, y_train, X_test, y_test = load_parity(4)
-    assert X_train.shape == (8, 4)
-    assert X_test.shape == (8, 4)
+    assert X_train.shape == (16, 4)
+    assert len({tuple(row) for row in X_train}) == 16
     assert X_train.dtype == np.bool_
-    assert set(y_train).issubset({0, 1})
+    np.testing.assert_array_equal(y_train, X_train.sum(axis=1) % 2)
+
+
+def test_thermometer():
+    X = np.arange(8, dtype=np.float32)[:, np.newaxis]
+    result = thermometer(X, n_thresholds=3)
+    assert result.shape == (8, 3)
+    # each row is a prefix of ones: monotone in x
+    assert (np.diff(result.sum(axis=1)) >= 0).all()
+    assert not result[0].any()
+    assert result[-1].all()
 
 
 def test_load_breast_cancer():

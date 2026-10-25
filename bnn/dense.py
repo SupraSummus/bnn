@@ -52,6 +52,10 @@ class Dense(Layer):
 
         return outputs, (inputs, active_excitator_count, active_inhibitor_count)
 
+    def margins(self, inputs: ArrayBool) -> np.ndarray:
+        _, (_, active_excitator_count, active_inhibitor_count) = self.forward(inputs)
+        return (active_excitator_count - active_inhibitor_count - self.thresholds).astype(np.int32)
+
     def backward(
         self,
         state,
@@ -91,6 +95,7 @@ class Dense(Layer):
             too_much_contributor_count = active_excitator_count[:, i] + inactive_inhibitor_count
             too_much_contributions = np.divide(
                 too_much[:, i], too_much_contributor_count,
+                out=np.zeros_like(too_much_contributor_count),
                 where=too_much_contributor_count != 0,
             )
             input_too_much[:, self.excitators[i]] += excitations * too_much_contributions[:, np.newaxis]
@@ -104,6 +109,7 @@ class Dense(Layer):
             not_enough_contributor_count = active_inhibitor_count[:, i] + inactive_excitator_count
             not_enough_contributions = np.divide(
                 not_enough[:, i], not_enough_contributor_count,
+                out=np.zeros_like(not_enough_contributor_count),
                 where=not_enough_contributor_count != 0,
             )
             input_not_enough[:, self.excitators[i]] += ~excitations * not_enough_contributions[:, np.newaxis]

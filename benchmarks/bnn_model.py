@@ -67,11 +67,17 @@ def train_epoch(network, X_train, y_train, n_classes, batch_size=64):
         network.update()
 
 
+def predict(network, X):
+    """
+    Pick the class whose output neuron is furthest above (or least below) its
+    threshold. Plain argmax over binary outputs would break ties towards class 0.
+    """
+    return np.argmax(network.margins(X), axis=1)
+
+
 def evaluate(network, X, y, n_classes):
     """Evaluate classification accuracy."""
-    output, _ = network.forward(X)
-    predictions = np.argmax(output.astype(np.float32), axis=1)
-    return np.mean(predictions == y)
+    return np.mean(predict(network, X) == y)
 
 
 def train_and_evaluate(

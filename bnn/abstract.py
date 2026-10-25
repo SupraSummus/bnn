@@ -57,6 +57,13 @@ class Layer:
         """
         pass
 
+    def margins(self, inputs: ArrayBool) -> np.ndarray:
+        """
+        Integer distance of each output from its firing threshold.
+        Output fires iff margin >= 0. Useful for ranking outputs (eg. picking a class).
+        """
+        raise NotImplementedError
+
 
 class Sequence(Layer):
     def __init__(self, layers: List[Layer]):
@@ -83,3 +90,8 @@ class Sequence(Layer):
     def update(self) -> None:
         for layer in self.layers:
             layer.update()
+
+    def margins(self, input_data: ArrayBool) -> np.ndarray:
+        for layer in self.layers[:-1]:
+            input_data, _ = layer.forward(input_data)
+        return self.layers[-1].margins(input_data)
