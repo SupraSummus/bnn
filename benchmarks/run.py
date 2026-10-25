@@ -2,15 +2,16 @@
 """
 Benchmark evaluation suite for the BNN project.
 
-Runs both BNN variants (Dense -- the original rule, CounterDense -- integer
-counters with margin-aware credit assignment) and a Tsetlin Machine against
-multiple datasets and compares them with baseline classifiers. Stochastic
-models are averaged over several seeds. Every model run is a separate task,
-spread over all cores.
+Runs CounterDense (integer counters with margin-aware credit assignment)
+against multiple datasets. With --all also the reference models: Dense (the
+original rule), a Tsetlin Machine and baseline classifiers. They don't change
+with CounterDense work and take nearly all the time; README.md has their numbers. Stochastic models are averaged over several seeds.
+Every model run is a separate task, spread over all cores.
 
 Usage:
-    python -m benchmarks.run              # everything
-    python -m benchmarks.run parity breast  # only benchmarks whose name contains one of these
+    python -m benchmarks.run                  # CounterDense on every dataset
+    python -m benchmarks.run parity breast    # only benchmarks whose name contains one of these
+    python -m benchmarks.run --all [names]    # with the reference models
 """
 
 import sys
@@ -69,15 +70,15 @@ def _timed(fn, *args, **kwargs):
     return fn(*args, **kwargs), time.time() - t0
 
 
-def submit_benchmark(pool, data, dense_kwargs, counter_kwargs, tsetlin_kwargs, seeds=SEEDS):
-    """Queue every model run of one benchmark. Returns {column key: [futures]}."""
+def submit_benchmark(pool, data, dense_kwargs, counter_kwargs, tsetlin_kwargs, models=LABELS, seeds=SEEDS):
+    """Queue the runs of `models` (column keys) on one benchmark. Returns {column key: [futures]}."""
     def once(fn):
-        return [pool.submit(_timed, fn, *data)]
+        return lambda: [pool.submit(_timed, fn, *data)]
 
     def per_seed(fn, **kwargs):
-        return [pool.submit(_timed, fn, *data, seed=seed, **kwargs) for seed in seeds]
+        return lambda: [pool.submit(_timed, fn, *data, seed=seed, **kwargs) for seed in seeds]
 
-    return {
+    runs = {
         "logreg": once(logistic_regression_accuracy),
         "decision_tree": once(decision_tree_accuracy),
         "random_forest": once(random_forest_accuracy),
@@ -85,6 +86,7 @@ def submit_benchmark(pool, data, dense_kwargs, counter_kwargs, tsetlin_kwargs, s
         "bnn": per_seed(train_and_evaluate, model="dense", **dense_kwargs),
         "counter": per_seed(train_and_evaluate, model="counter", **counter_kwargs),
     }
+    return {key: runs[key]() for key in models}
 
 
 def report_benchmark(name, data, futures):
@@ -107,6 +109,8 @@ def report_benchmark(name, data, futures):
     print(f"  {'Random guess':<16} {results['random']:.4f}")
     print(f"  {'Majority class':<16} {results['majority']:.4f}")
     for key, label in LABELS.items():
+        if key not in futures:
+            continue
         scores, seconds = zip(*(f.result() for f in futures[key]))
         results[key] = np.mean(scores)
         if len(scores) == 1:
@@ -126,14 +130,19 @@ def print_summary(all_results):
     print("  BENCHMARK RESULTS SUMMARY  (stochastic models: mean over seeds)")
     print(f"{'='*90}\n")
 
-    header = f"{'Dataset':<16}" + "".join(f" {title:>8}" for _, title in COLUMNS)
+    if not all_results:
+        return
+    columns = [(key, title) for key, title in COLUMNS if key in all_results[0]]
+    header = f"{'Dataset':<16}" + "".join(f" {title:>8}" for _, title in columns)
     print(header)
     print("-" * len(header))
     for r in all_results:
-        print(f"{r['name']:<16}" + "".join(f" {r[key]:>8.4f}" for key, _ in COLUMNS))
+        print(f"{r['name']:<16}" + "".join(f" {r[key]:>8.4f}" for key, _ in columns))
     print()
 
     for key, title in [("bnn", "BNN (Dense)"), ("counter", "BNN (Counter)")]:
+        if key not in all_results[0]:
+            continue
         beats_random_all = all(r[key] > r["random"] for r in all_results)
         fashion = [r[key] > r["majority"] for r in all_results if r["name"] == "Fashion-MNIST"]
         tabular = [
@@ -214,7 +223,8 @@ def main():
     np.random.seed(42)
     start_time = time.time()
 
-    selected = [arg.lower() for arg in sys.argv[1:]]
+    models = list(LABELS) if "--all" in sys.argv[1:] else ["counter"]
+    selected = [arg.lower() for arg in sys.argv[1:] if not arg.startswith("--")]
     benchmarks = [
         b for b in BENCHMARKS
         if not selected or any(s in b[0].lower() for s in selected)
@@ -227,7 +237,7 @@ def main():
         for name, load_fn, *model_kwargs in benchmarks:
             print(f"Loading {name}...", flush=True)
             data = load_fn()
-            queued.append((name, data, submit_benchmark(pool, data, *model_kwargs)))
+            queued.append((name, data, submit_benchmark(pool, data, *model_kwargs, models=models)))
 
         for name, data, futures in queued:
             try:

@@ -8,8 +8,9 @@
 
     python -m bnn.mnist
 
-    python -m benchmarks.run                 # all benchmarks, ~7 min on 4 cores
+    python -m benchmarks.run                 # CounterDense on all datasets
     python -m benchmarks.run parity breast   # a subset
+    python -m benchmarks.run --all           # with the reference models (slow)
 
 ## Idea
 
@@ -95,7 +96,7 @@ Open problems are in [TODO.md](TODO.md).
 
 ## Benchmark results
 
-`python -m benchmarks.run`.
+`python -m benchmarks.run --all` (without `--all` only the Counter column).
 Inputs binarized: two bits per pixel (> 0, > 128), one-hot categoricals, thermometer-coded numbers.
 Stochastic models are averaged over 3 seeds; settings per dataset are in `benchmarks/run.py`.
 Parity is scored on the full truth table.
