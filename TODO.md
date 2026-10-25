@@ -26,4 +26,5 @@
   a Python loop over batch rows gives bit-identical sums ~1.5x faster.
 * PR #1 (predictive coding) builds on `Dense`; port to `CounterDense` or close.
 * `benchmarks/plot_metaparams.py` still sweeps `Dense` only.
+* `poetry.lock` predates scikit-learn, matplotlib and pandas in `pyproject.toml`; run `poetry lock`.
 * Binarization quantiles (`thermometer`, median split) are fit on train+test; harmless (label-free) but not clean.

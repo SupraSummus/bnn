@@ -18,6 +18,8 @@ flake8-isort = "*"
 flake8-pyproject = "*"
 scikit-learn = "*"
 matplotlib = "*"
+pandas = "<3"  # fetch_openml needs it; sklearn 1.9's ARFF parser breaks on pandas 3
+threadpoolctl = "*"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

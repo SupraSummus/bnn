@@ -63,7 +63,7 @@ def _try_fetch_openml(name, version=1):
         return fetch_openml(
             name, version=version, as_frame=False, parser="auto"
         )
-    except Exception:
+    except OSError:
         return None
 
 

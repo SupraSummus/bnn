@@ -5,7 +5,8 @@ Benchmark evaluation suite for the BNN project.
 Runs both BNN variants (Dense -- the original rule, CounterDense -- integer
 counters with margin-aware credit assignment) and a Tsetlin Machine against
 multiple datasets and compares them with baseline classifiers. Stochastic
-models are averaged over several seeds.
+models are averaged over several seeds. Every model run is a separate task,
+spread over all cores.
 
 Usage:
     python -m benchmarks.run              # everything
@@ -14,8 +15,11 @@ Usage:
 
 import sys
 import time
+import traceback
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from benchmarks.baselines import (
     decision_tree_accuracy,
@@ -50,64 +54,69 @@ COLUMNS = [
     ("counter", "Counter"),
 ]
 
+LABELS = {
+    "logreg": "Logistic regr.",
+    "decision_tree": "Decision tree",
+    "random_forest": "Random forest",
+    "tsetlin": "Tsetlin machine",
+    "bnn": "BNN (Dense)",
+    "counter": "BNN (Counter)",
+}
 
-def _over_seeds(label, results, key, fn, seeds):
+
+def _timed(fn, *args, **kwargs):
     t0 = time.time()
-    scores = [fn(seed) for seed in seeds]
-    results[key] = np.mean(scores)
-    print(
-        f"  {label:<16} {np.mean(scores):.4f} ± {np.std(scores):.4f}"
-        f"  ({time.time() - t0:.1f}s, {len(seeds)} seeds)",
-        flush=True,
-    )
+    return fn(*args, **kwargs), time.time() - t0
 
 
-def run_benchmark(name, load_fn, dense_kwargs, counter_kwargs, tsetlin_kwargs, seeds=SEEDS):
-    """Run a single benchmark: load data, train models, compute baselines."""
+def submit_benchmark(pool, data, dense_kwargs, counter_kwargs, tsetlin_kwargs, seeds=SEEDS):
+    """Queue every model run of one benchmark. Returns {column key: [futures]}."""
+    def once(fn):
+        return [pool.submit(_timed, fn, *data)]
+
+    def per_seed(fn, **kwargs):
+        return [pool.submit(_timed, fn, *data, seed=seed, **kwargs) for seed in seeds]
+
+    return {
+        "logreg": once(logistic_regression_accuracy),
+        "decision_tree": once(decision_tree_accuracy),
+        "random_forest": once(random_forest_accuracy),
+        "tsetlin": per_seed(tsetlin_accuracy, **tsetlin_kwargs),
+        "bnn": per_seed(train_and_evaluate, model="dense", **dense_kwargs),
+        "counter": per_seed(train_and_evaluate, model="counter", **counter_kwargs),
+    }
+
+
+def report_benchmark(name, data, futures):
+    """Wait for one benchmark's runs and print them. Times are compute time, summed over seeds."""
+    X_train, y_train, X_test, y_test = data
     print(f"\n{'='*60}")
     print(f"  {name}")
     print(f"{'='*60}")
-
-    print("  Loading data...", flush=True)
-    X_train, y_train, X_test, y_test = load_fn()
-    n_classes = len(np.unique(y_train))
     print(
         f"  Train: {X_train.shape[0]} samples, {X_train.shape[1]} features, "
-        f"{n_classes} classes"
+        f"{len(np.unique(y_train))} classes"
     )
     print(f"  Test:  {X_test.shape[0]} samples")
 
-    results = {"name": name}
-    data = (X_train, y_train, X_test, y_test)
-
-    results["random"] = random_guess_accuracy(y_train, y_test)
-    results["majority"] = majority_class_accuracy(y_train, y_test)
+    results = {
+        "name": name,
+        "random": random_guess_accuracy(y_train, y_test),
+        "majority": majority_class_accuracy(y_train, y_test),
+    }
     print(f"  {'Random guess':<16} {results['random']:.4f}")
     print(f"  {'Majority class':<16} {results['majority']:.4f}")
-    for key, label, fn in [
-        ("logreg", "Logistic regr.", logistic_regression_accuracy),
-        ("decision_tree", "Decision tree", decision_tree_accuracy),
-        ("random_forest", "Random forest", random_forest_accuracy),
-    ]:
-        t0 = time.time()
-        results[key] = fn(*data)
-        print(f"  {label:<16} {results[key]:.4f}  ({time.time() - t0:.1f}s)", flush=True)
-
-    _over_seeds(
-        "Tsetlin machine", results, "tsetlin",
-        lambda seed: tsetlin_accuracy(*data, seed=seed, **tsetlin_kwargs),
-        seeds,
-    )
-    _over_seeds(
-        "BNN (Dense)", results, "bnn",
-        lambda seed: train_and_evaluate(*data, model="dense", seed=seed, **dense_kwargs),
-        seeds,
-    )
-    _over_seeds(
-        "BNN (Counter)", results, "counter",
-        lambda seed: train_and_evaluate(*data, model="counter", seed=seed, **counter_kwargs),
-        seeds,
-    )
+    for key, label in LABELS.items():
+        scores, seconds = zip(*(f.result() for f in futures[key]))
+        results[key] = np.mean(scores)
+        if len(scores) == 1:
+            print(f"  {label:<16} {scores[0]:.4f}  ({seconds[0]:.1f}s)", flush=True)
+        else:
+            print(
+                f"  {label:<16} {np.mean(scores):.4f} ± {np.std(scores):.4f}"
+                f"  ({sum(seconds):.1f}s, {len(scores)} seeds)",
+                flush=True,
+            )
     return results
 
 
@@ -212,15 +221,19 @@ def main():
     ]
 
     all_results = []
-    for name, load_fn, dense_kwargs, counter_kwargs, tsetlin_kwargs in benchmarks:
-        try:
-            result = run_benchmark(name, load_fn, dense_kwargs, counter_kwargs, tsetlin_kwargs)
-            all_results.append(result)
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            import traceback
+    # one BLAS thread per worker, the workers already use every core
+    with ProcessPoolExecutor(initializer=threadpool_limits, initargs=(1,)) as pool:
+        queued = []
+        for name, load_fn, *model_kwargs in benchmarks:
+            print(f"Loading {name}...", flush=True)
+            data = load_fn()
+            queued.append((name, data, submit_benchmark(pool, data, *model_kwargs)))
 
-            traceback.print_exc()
+        for name, data, futures in queued:
+            try:
+                all_results.append(report_benchmark(name, data, futures))
+            except Exception:
+                traceback.print_exc()
 
     total_time = time.time() - start_time
     print_summary(all_results)

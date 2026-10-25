@@ -8,7 +8,7 @@
 
     python -m bnn.mnist
 
-    python -m benchmarks.run                 # all benchmarks, ~20 min on one core
+    python -m benchmarks.run                 # all benchmarks, ~7 min on 4 cores
     python -m benchmarks.run parity breast   # a subset
 
 ## Idea
