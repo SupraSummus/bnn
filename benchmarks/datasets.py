@@ -27,6 +27,34 @@ def binarize_continuous(X, threshold=None):
     return (X > threshold).astype(np.bool_)
 
 
+def thermometer(X, n_thresholds=3):
+    """
+    Binarize each continuous column into `n_thresholds` bits: x > q for
+    evenly spaced quantiles q. Keeps order information that a single
+    median split throws away.
+    """
+    quantiles = np.linspace(0, 1, n_thresholds + 2)[1:-1]
+    thresholds = np.quantile(X, quantiles, axis=0)
+    return (X[:, np.newaxis, :] > thresholds[np.newaxis]).reshape(len(X), -1)
+
+
+def binarize_openml(data):
+    """
+    Binarize an OpenML bunch fetched with as_frame=False: one-hot for
+    categorical columns (missing values get no bit), thermometer for numeric.
+    """
+    categories = data.categories or {}
+    columns = []
+    for j, name in enumerate(data.feature_names):
+        column = data.data[:, j]
+        if name in categories:
+            values = np.array(categories[name], dtype=object)
+            columns.append(column[:, np.newaxis] == values[np.newaxis, :])
+        else:
+            columns.append(thermometer(column.astype(np.float32)[:, np.newaxis]))
+    return np.concatenate(columns, axis=1).astype(np.bool_)
+
+
 def _try_fetch_openml(name, version=1):
     """Try to fetch from OpenML, return None on network failure."""
     try:
@@ -76,12 +104,8 @@ def load_mushroom():
     """
     data = _try_fetch_openml("mushroom", version=1)
     if data is not None:
-        X = data.data
+        X = binarize_openml(data)
         y = LabelEncoder().fit_transform(data.target)
-        if np.issubdtype(X.dtype, np.floating):
-            X = binarize_continuous(X)
-        else:
-            X = (X > 0).astype(np.bool_)
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
@@ -113,9 +137,8 @@ def load_adult():
     """
     data = _try_fetch_openml("adult", version=2)
     if data is not None:
-        X = data.data.astype(np.float32)
+        X = binarize_openml(data)
         y = LabelEncoder().fit_transform(data.target)
-        X = binarize_continuous(X)
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
         )
@@ -150,8 +173,10 @@ def load_parity(n_bits):
     """
     Generate synthetic parity problem (XOR of all bits).
 
-    Returns all 2^n_bits possible inputs for training,
-    and a separate random sample for testing.
+    Returns the full truth table as both train and test set. Parity can't
+    be generalized from a partial table (any held-out pattern differs from
+    a seen one in a single bit, which flips the label), so what we measure
+    is whether the model can represent and find the function at all.
     """
     n_samples = 2**n_bits
     X = np.array(
@@ -162,10 +187,4 @@ def load_parity(n_bits):
         dtype=np.bool_,
     )
     y = np.sum(X, axis=1) % 2  # parity = XOR of all bits
-
-    # For parity, use all combinations as train and test
-    # (the challenge is learning the function, not generalization)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.5, random_state=42, stratify=y
-    )
-    return X_train, y_train, X_test, y_test
+    return X, y, X, y

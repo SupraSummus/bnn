@@ -102,6 +102,7 @@ def test_sequence_update():
 
 
 def test_end_to_end_training():
+    np.random.seed(0)
     network = Sequence([
         Dense(
             input_features=4,
@@ -146,8 +147,6 @@ def test_end_to_end_training():
 
     # Check if the network has learned something (at least 50% accuracy)
     assert correct_predictions >= 2
-
-    assert False, correct_predictions
 
 
 def test_normalize_synapses_remove_cancelling():
