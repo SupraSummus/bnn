@@ -8,9 +8,10 @@ suitable for the benchmark suite.
 import numpy as np
 
 from bnn.abstract import Sequence
-from bnn.counter import CounterDense, refit_readout
+from bnn.counter import CounterDense, Ratchet, readout_inputs, refit_readout
 from bnn.counter import train_epoch as train_counter_epoch
 from bnn.dense import Dense
+from bnn.exact import polish_readout
 
 
 def build_network(input_features, n_classes, hidden_sizes=(64, 32)):
@@ -40,26 +41,29 @@ def build_network(input_features, n_classes, hidden_sizes=(64, 32)):
     return Sequence(layers)
 
 
-def build_counter_network(input_features, n_classes, hidden_sizes=(64, 32), rng=None, **layer_kwargs):
+def build_counter_network(
+    input_features, n_classes, hidden_sizes=(64, 32), rng=None, hidden_kwargs=None, **layer_kwargs,
+):
     """
     Build a CounterDense network for classification.
 
     Hidden layers only accept flips they can make cheaply (minimal disturbance)
     and revive units that stopped varying (homeostasis); the output layer, whose
     errors are exact, takes them all and also keeps a safety margin on correct
-    answers. `layer_kwargs` go to every layer.
+    answers. `layer_kwargs` go to every layer, `hidden_kwargs` (over them) to the hidden ones.
     """
     sizes = [input_features, *hidden_sizes]
+    hidden_kwargs = {**layer_kwargs, **(hidden_kwargs or {})}
     layers = [
-        CounterDense(n_in, n_out, accept_distance=0, homeostasis=256, rng=rng, **layer_kwargs)
+        CounterDense(n_in, n_out, accept_distance=0, homeostasis=256, rng=rng, **hidden_kwargs)
         for n_in, n_out in zip(sizes, sizes[1:])
     ]
     layers.append(CounterDense(sizes[-1], n_classes, stabilize_margin=2, rng=rng, **layer_kwargs))
     return Sequence(layers)
 
 
-def train_epoch(network, X_train, y_train, n_classes, batch_size=64, rng=None):
-    """Train the network for one epoch."""
+def train_epoch(network, X_train, y_train, n_classes, batch_size=64, rng=None, ratchet=None):
+    """Train the network for one epoch; a CounterDense net with a `ratchet` is checked as often as it asks."""
     if rng is None:
         rng = np.random.default_rng()
     n_samples = X_train.shape[0]
@@ -67,7 +71,13 @@ def train_epoch(network, X_train, y_train, n_classes, batch_size=64, rng=None):
 
     if all(type(layer) is CounterDense for layer in network.layers):
         targets = np.arange(n_classes) == y_train[:, np.newaxis]
-        train_counter_epoch(network.layers, X_train, targets, indices, batch_size)
+        if ratchet is None:
+            train_counter_epoch(network.layers, X_train, targets, indices, batch_size)
+            return
+        chunk = batch_size * ratchet.check_every
+        for start in range(0, n_samples, chunk):
+            train_counter_epoch(network.layers, X_train, targets, indices[start:start + chunk], batch_size)
+            ratchet.check(network.layers)
         return
 
     for start in range(0, n_samples, batch_size):
@@ -118,9 +128,18 @@ def train_and_evaluate(
     model="dense",
     seed=None,
     layer_kwargs=None,
+    hidden_kwargs=None,
     consolidate=True,
+    polish_steps=32,
+    ratchet_tolerance=0.25,
 ):
-    """Build, train, and evaluate a BNN on the given dataset."""
+    """
+    Build, train, and evaluate a BNN on the given dataset.
+    CounterDense nets train under a `bnn.counter.Ratchet` (`ratchet_tolerance` None: without),
+    are consolidated over their last epoch (`consolidate`), replaced by the best state the ratchet saw
+    if that one is more accurate by more than the tolerance, and their output layer is then polished
+    by up to `polish_steps` steps of exact coordinate descent (`bnn.exact.polish_readout`).
+    """
     n_classes = len(np.unique(y_train))
     input_features = X_train.shape[1]
     rng = np.random.default_rng(seed)
@@ -139,22 +158,31 @@ def train_and_evaluate(
             n_classes=n_classes,
             hidden_sizes=hidden_sizes,
             rng=rng,
+            hidden_kwargs=hidden_kwargs,
             **(layer_kwargs or {}),
         )
     else:
         raise ValueError(f"Unknown model {model!r}")
 
-    tallied = network.layers if model == "counter" and consolidate else []
+    counter = model == "counter"
+    tallied = network.layers if counter and consolidate else []
+    ratchet = Ratchet(X_train, y_train, ratchet_tolerance) if counter and ratchet_tolerance is not None else None
     for epoch in range(n_epochs):
         if epoch == n_epochs - 1:
             for layer in tallied:
                 layer.start_tally()
-        train_epoch(network, X_train, y_train, n_classes, batch_size=batch_size, rng=rng)
+            if tallied and ratchet:
+                ratchet.rebase(network.layers)
+        train_epoch(network, X_train, y_train, n_classes, batch_size=batch_size, rng=rng, ratchet=ratchet)
     for layer in tallied:
         layer.consolidate()
     if tallied and hidden_sizes:
         targets = np.arange(n_classes) == y_train[:, np.newaxis]
         refit_readout(network.layers, X_train, targets, rng.permutation(len(X_train)), batch_size)
+    if ratchet:
+        ratchet.keep_best(network.layers)
+    if counter and polish_steps:
+        polish_readout(network.layers[-1], readout_inputs(network.layers, X_train), y_train, max_steps=polish_steps)
 
     accuracy = evaluate(network, X_test, y_test, n_classes)
     return accuracy

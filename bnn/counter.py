@@ -16,6 +16,7 @@ The heavy lifting is in compiled kernels (`counter_kernels`, numba, bit-packed
 synapses); `counter_reference` has the same rule in plain numpy.
 """
 
+import copy
 from typing import Optional
 
 import numpy as np
@@ -176,6 +177,9 @@ class CounterDense(Layer):
         """
         self._flush_tally()
         weights, thresholds, n, _ = self.tally
+        if n == 0:  # nothing tallied (a ratchet rolled back to where the tally started): keep the state
+            self.tally = None
+            return
         self.counters = (np.sign(weights) * (2 * np.abs(weights) >= n) * self.connect_level).astype(np.int16)
         self.thresholds = np.round(thresholds / n).astype(np.int32)
         self.tally = None
@@ -260,16 +264,71 @@ def train_epoch(layers, inputs: ArrayBool, targets: ArrayBool, order: np.ndarray
             layer.tally[2] += updates
 
 
+def readout_inputs(layers, inputs: ArrayBool) -> ArrayBool:
+    """What the last layer reads: `inputs` through all the layers below it."""
+    for layer in layers[:-1]:
+        inputs = layer.margins(inputs) >= 0
+    return inputs
+
+
 def refit_readout(layers, inputs: ArrayBool, targets: ArrayBool, order: np.ndarray, batch_size: int):
     """
     After consolidation: one more epoch of the last layer alone on the code the consolidated layers
     below produce, tallied and consolidated. Each layer was averaged on its own, so the averaged
     hidden code is one no layer above has seen; the readout is fitted to the code it will get.
     """
-    code = inputs
-    for layer in layers[:-1]:
-        code = layer.margins(code) >= 0
     readout = layers[-1]
     readout.start_tally()
-    train_epoch([readout], code, targets, order, batch_size)
+    train_epoch([readout], readout_inputs(layers, inputs), targets, order, batch_size)
     readout.consolidate()
+
+
+class Ratchet:
+    """
+    Selection on top of learning. Deep nets learn by search, and the plasticity that finds a solution
+    also walks away from it (parity-16 with 3×64 hidden: 0.9 and back to 0.5 within a few hundred updates).
+    `check` measures training accuracy on a fixed sample, remembers the best state,
+    and puts the layers back to it when accuracy fell more than `tolerance` below:
+    wider than the noise of a healthy net, so only collapses roll back.
+    """
+
+    def __init__(self, inputs: ArrayBool, labels, tolerance=0.25, check_every=128, size=2048):
+        # its own generator: the sample doesn't shift the training's random stream
+        pick = np.random.default_rng(0).permutation(len(inputs))[:size]
+        self.inputs, self.labels = inputs[pick], labels[pick]
+        self.tolerance = tolerance
+        self.check_every = check_every
+        self.best, self.best_accuracy = None, -1.0
+        # what a collapse rolls back to: the best state, or one with the running tally (see rebase)
+        self.anchor, self.anchor_accuracy = None, -1.0
+        self.rollbacks = 0
+
+    def accuracy(self, layers):
+        margins = layers[-1].margins(readout_inputs(layers, self.inputs))
+        return np.mean(np.argmax(margins, axis=1) == self.labels)
+
+    def check(self, layers):
+        """Remember the state if it is the best yet; roll `layers` back (in place) on a collapse."""
+        accuracy = self.accuracy(layers)
+        if accuracy > self.anchor_accuracy:
+            self.anchor, self.anchor_accuracy = copy.deepcopy(layers), accuracy
+            if accuracy > self.best_accuracy:
+                self.best, self.best_accuracy = self.anchor, accuracy  # never modified, so shared
+        elif accuracy < self.anchor_accuracy - self.tolerance:
+            layers[:] = copy.deepcopy(self.anchor)
+            self.rollbacks += 1
+
+    def rebase(self, layers):
+        """Roll back to the current state from now on: a tally started, and older states don't have it."""
+        self.anchor, self.anchor_accuracy = copy.deepcopy(layers), self.accuracy(layers)
+        if self.anchor_accuracy > self.best_accuracy:
+            self.best, self.best_accuracy = self.anchor, self.anchor_accuracy
+
+    def keep_best(self, layers):
+        """
+        At the end: put back the best state if it beats `layers` by more than the tolerance.
+        A consolidated net fits the training set a little worse than the best raw state
+        and generalizes better, so only a consolidated collapse should lose.
+        """
+        if self.best is not None and self.best_accuracy > self.accuracy(layers) + self.tolerance:
+            layers[:] = copy.deepcopy(self.best)

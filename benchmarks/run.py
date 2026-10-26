@@ -163,8 +163,10 @@ BENCHMARKS = [
         load_fashion_mnist,
         {"n_epochs": 5, "hidden_sizes": (128, 64), "batch_size": 128},
         {
-            "n_epochs": 5, "hidden_sizes": (), "batch_size": 32,
+            "n_epochs": 5, "hidden_sizes": (4096,), "batch_size": 32,
             "layer_kwargs": {"connect_level": 16, "counter_max": 128, "init_range": 24, "threshold_level": 1},
+            # the hidden layer moves little from its random start (see README, "Wider and deeper")
+            "hidden_kwargs": {"connect_level": 256, "counter_max": 2048, "init_range": 384},
         },
         {"n_epochs": 3, "max_train": 5000, "n_clauses": 100, "T": 20, "s": 10.0},
     ),

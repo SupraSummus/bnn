@@ -1,7 +1,7 @@
 import numpy as np
 
 from bnn.abstract import Sequence
-from bnn.counter import CounterDense, train_epoch
+from bnn.counter import CounterDense, Ratchet, train_epoch
 from bnn.counter_reference import ReferenceCounterDense
 
 
@@ -209,3 +209,21 @@ def test_fused_epoch_matches_layer_by_layer():
         stepped = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, homeostasis=homeostasis)
         for f, s in zip(fused, stepped):
             assert_same_state(f, s)
+
+
+def test_ratchet_rolls_back_a_collapse():
+    X = ((np.arange(16)[:, None] >> np.arange(4)) & 1).astype(bool)
+    y = X[:, 0].astype(np.int64)
+    good = make_layer([[-1, 0, 0, 0], [1, 0, 0, 0]], [0, 1])  # class 1 iff bit 0
+    layers = [good]
+    ratchet = Ratchet(X, y, tolerance=0.25)
+    ratchet.check(layers)
+    assert ratchet.best_accuracy == 1
+    # a small dip stays, a collapse goes back to the best state
+    layers[0] = make_layer([[-1, -1, -1, 0], [1, 0, 0, 0]], [0, 1])  # wrong on 2 of 16
+    ratchet.check(layers)
+    assert ratchet.rollbacks == 0 and ratchet.accuracy(layers) == 0.875
+    layers[0] = make_layer([[1, 0, 0, 0], [-1, 0, 0, 0]], [1, 0])  # all wrong
+    ratchet.check(layers)
+    assert ratchet.rollbacks == 1 and ratchet.accuracy(layers) == 1
+    assert layers[0] is not ratchet.best[0]  # a copy: training it doesn't touch the saved state

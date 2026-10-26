@@ -101,6 +101,15 @@ Roughly in order of impact:
    Each layer is averaged on its own, so in a deep net the averaged hidden code is one
    the output never saw (Adult with 3 hidden layers: 0.84 before, 0.76 after, in 1-2 seeds of 6).
    So the output layer is then refitted for one epoch on the consolidated code (`counter.refit_readout`).
+9. **Ratchet** (`counter.Ratchet`): every 128 updates, training accuracy on a fixed sample of 2048;
+   if it fell more than 0.25 below the best seen, the net goes back to that state.
+   Deep nets learn by search, and the plasticity that finds a solution also leaves it:
+   parity-16 with 3×64 hidden reached 0.9 and fell back to 0.5 every few epochs (0.51 after consolidation);
+   with the ratchet 0.96-0.97 (3 seeds). The tolerance is above the raw state's noise (up to 0.14 on Fashion-MNIST),
+   so no benchmark in the table rolls back and none changes.
+10. **Exact polish of the output layer** (`bnn/exact.py`, see "Exact moves" below):
+   up to 32 steps of coordinate descent whose every move is evaluated exactly on the training set
+   and never adds a training error. +0.005 on Fashion-MNIST, +0.009 on Breast Cancer, +0.001 on Adult (3 seeds each).
 
 Margins spread like `sqrt(fan_in)`, and so do the defaults of `connect_level` (`0.7 * sqrt(fan_in)`,
 what Adult and Breast Cancer had been tuned to by hand), `window` and `hinge`.
@@ -118,20 +127,40 @@ Parity is scored on the full truth table.
 
 | Dataset       | Majority | LogReg | DTree | RForest | Tsetlin | Dense | Counter |
 |---------------|---------:|-------:|------:|--------:|--------:|------:|--------:|
-| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.842 |
+| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.855 |
 | Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 1.000 |
-| Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.844 |
-| Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.915 |
+| Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.845 |
+| Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.924 |
 | Parity-4      | 0.500 | 0.500 | 1.000 | 1.000 | 1.000 | 0.500 | 1.000 |
 | Parity-8      | 0.500 | 0.500 | 1.000 | 1.000 | 0.510 | 0.500 | 1.000 |
 | Parity-16     | 0.500 | 0.500 | 1.000 | 1.000 | 0.500 | 0.500 | 1.000 |
 
 ¹ trained on 5000 samples to keep the run short.
-Counter uses no hidden layer on Fashion-MNIST, Adult and Breast Cancer.
-On Adult and Breast Cancer 1-3 hidden layers of 32 now give the same (0.845-0.846, 0.906-0.915),
-on Fashion-MNIST a hidden layer still hurts (below).
+Counter uses no hidden layer on Adult and Breast Cancer,
+where 1-3 hidden layers of 32 give the same (0.845-0.846, 0.906-0.915, before polishing).
+On Fashion-MNIST it uses 4096 hidden units that learn slowly (below); one layer gets 0.847.
 Over 10 seeds parity-4, -8 and -16 are solved every time, Mushroom in 9 (0.9999)
 (before the pressure rule: parity-8 0.90 ± 0.05, parity-16 0.58 ± 0.04, Mushroom 0.995).
+
+## Exact moves
+
+A network of threshold units with ternary synapses is discrete, so the effect of a change
+can be counted instead of linearized. Moving synapse `(o, i)` by one step shifts output `o`'s margin
+by ±1 on exactly the samples where input `i` is on; a threshold is the weight of an input that is always on.
+For every sample we know what ±1 on each margin does to its loss and to whether it is classified right
+(`exact.move_terms`), so one matrix product gives the exact change of the training errors and of the loss
+for every single move of a layer at once (`exact.move_gains`).
+A gradient gives the slope; this gives the value of each discrete step.
+
+`exact.polish_readout` does coordinate descent with these gains on the output layer after training.
+A move is allowed only if it adds no training error; among those, the one lowering a multiclass hinge
+(on the gaps `m[label] - m[other]`) most is taken. Moves made together interact,
+so each step is checked exactly and cut in half until it helps: training errors never go up.
+On Fashion-MNIST with one layer the gain on test comes within ~25 steps (0.842 → 0.847); ~300 steps get no further.
+Without the error guard the hinge alone *lowered* accuracy on Adult with a hidden layer (0.845 → 0.83).
+The online rule doesn't get there by itself: multiclass output pressure
+(the right class up, every class within `hinge` of it down) changed nothing.
+What the exact view did for hidden layers is in TODO.md.
 
 ## Speed
 
@@ -161,7 +190,12 @@ Evaluating 60k samples costs about an epoch (the full margin matrix is allocated
 * **Width on pixels is random features.** Fashion-MNIST, 5 epochs:
   a hidden layer frozen at its random initialization gives 0.82 / 0.85 / 0.868 with 1024 / 4096 / 16384 units
   (1 seed), beating one layer (0.84) and logistic regression (0.847).
-  Learning that layer doesn't help: the blame rule gave 0.80 / 0.85, the pressure rule 0.806 / 0.806 (3 seeds).
+  Learning that layer at the speed of the output layer doesn't help (pressure rule: 0.806 / 0.806, 3 seeds):
+  the units collapse onto each other, and even *training* accuracy drops (1024 units: 0.853 frozen, 0.799 learned).
+  Learned slowly it helps: with `connect_level=256` (init ±384) instead of 16 the hidden layer moves 4% of its
+  synapses away from the random start, and 4096 units give 0.850, polished 0.855 (3 seeds; frozen and polished 0.846).
+  Parity is the opposite: its random features are useless, and slower hidden counters stop it learning.
+  ~55 s per seed, polishing the 4096-wide readout ~20.
 * **Depth.** Parity-8, plain chains, `benchmarks.bnn_model.train_and_evaluate` defaults, 3 seeds:
   solved at depth 1 to 6 with widths 64 to 256, 0.97-1.00 at depth 8 with widths 32 to 128
   (seed-sensitive: another random stream gave 8×128 a seed at 0.66), 12×64 0.60.
