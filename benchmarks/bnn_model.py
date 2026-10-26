@@ -8,7 +8,7 @@ suitable for the benchmark suite.
 import numpy as np
 
 from bnn.abstract import Sequence
-from bnn.counter import CounterDense
+from bnn.counter import CounterDense, refit_readout
 from bnn.counter import train_epoch as train_counter_epoch
 from bnn.dense import Dense
 
@@ -44,13 +44,14 @@ def build_counter_network(input_features, n_classes, hidden_sizes=(64, 32), rng=
     """
     Build a CounterDense network for classification.
 
-    Hidden layers only accept flips they can make cheaply (minimal disturbance);
-    the output layer, whose errors are exact, takes them all and also keeps a
-    safety margin on correct answers. `layer_kwargs` go to every layer.
+    Hidden layers only accept flips they can make cheaply (minimal disturbance)
+    and revive units that stopped varying (homeostasis); the output layer, whose
+    errors are exact, takes them all and also keeps a safety margin on correct
+    answers. `layer_kwargs` go to every layer.
     """
     sizes = [input_features, *hidden_sizes]
     layers = [
-        CounterDense(n_in, n_out, accept_distance=0, rng=rng, **layer_kwargs)
+        CounterDense(n_in, n_out, accept_distance=0, homeostasis=256, rng=rng, **layer_kwargs)
         for n_in, n_out in zip(sizes, sizes[1:])
     ]
     layers.append(CounterDense(sizes[-1], n_classes, stabilize_margin=2, rng=rng, **layer_kwargs))
@@ -151,6 +152,9 @@ def train_and_evaluate(
         train_epoch(network, X_train, y_train, n_classes, batch_size=batch_size, rng=rng)
     for layer in tallied:
         layer.consolidate()
+    if tallied and hidden_sizes:
+        targets = np.arange(n_classes) == y_train[:, np.newaxis]
+        refit_readout(network.layers, X_train, targets, rng.permutation(len(X_train)), batch_size)
 
     accuracy = evaluate(network, X_test, y_test, n_classes)
     return accuracy
