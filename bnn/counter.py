@@ -108,16 +108,25 @@ class CounterDense(Layer):
         )
 
     def update(self):
+        tally_weights, tally_since, tally_count = self._tally_rows()
         kernels.update(
             self.counters, self.counter_delta, self.touched, self.counter_max, self.connect_level,
             self.weights, self.exc, self.inh,
             self.thresholds, self.threshold_counters, self.threshold_delta, self.threshold_level,
+            tally_weights, tally_since, tally_count, self.tally is not None,
         )
         self._add_to_tally()
 
     def start_tally(self):
-        """Count the visible state of every synapse and threshold over the following updates."""
-        self.tally = [np.zeros(self.weights.shape, dtype=np.int32), np.zeros_like(self.thresholds), 0]
+        """
+        Count the visible state of every synapse and threshold over the following updates.
+        Synapse rows are added lazily: a row's state since the update in `since` is
+        added when the row changes or at consolidation, so a tallied update costs
+        what an untallied one does.
+        """
+        n_out = self.output_features
+        self.tally = [np.zeros(self.weights.shape, dtype=np.int32), np.zeros_like(self.thresholds), 0,
+                      np.zeros(n_out, dtype=np.int64)]
 
     def consolidate(self):
         """
@@ -126,7 +135,8 @@ class CounterDense(Layer):
         is a noisy sample; the average is what it converged around.
         Counters are reset to just past connect_level.
         """
-        weights, thresholds, n = self.tally
+        self._flush_tally()
+        weights, thresholds, n, _ = self.tally
         self.counters = (np.sign(weights) * (2 * np.abs(weights) >= n) * self.connect_level).astype(np.int16)
         self.thresholds = np.round(thresholds / n).astype(np.int32)
         self.tally = None
@@ -141,16 +151,31 @@ class CounterDense(Layer):
         )
 
     def _add_to_tally(self):
+        """After an update: thresholds and the count; synapse rows are added by the update kernel."""
         if self.tally is not None:
-            self.tally[0] += self.weights
             self.tally[1] += self.thresholds
             self.tally[2] += 1
+
+    def _tally_rows(self):
+        """(weight sums, since, updates so far) for the update kernel, empty when not tallying."""
+        if self.tally is None:
+            return np.zeros((0, 0), dtype=np.int32), np.zeros(0, dtype=np.int64), 0
+        return self.tally[0], self.tally[3], self.tally[2]
 
     def _pack(self, inputs):
         return kernels.pack_bits(np.ascontiguousarray(inputs, dtype=np.bool_))
 
+    def _flush_tally(self):
+        """Add every row's state since its last addition."""
+        if self.tally is not None:
+            weights, _, n, since = self.tally
+            weights += self.weights * (n - since)[:, np.newaxis].astype(np.int32)
+            since[:] = n
+
     def _sync_weights(self):
         """Refresh the visible synapses after counters were set from outside the update."""
+        if getattr(self, "tally", None) is not None:
+            self._flush_tally()
         self.weights = (
             (self.counters >= self.connect_level).astype(np.int8)
             - (self.counters <= -self.connect_level).astype(np.int8)
@@ -179,14 +204,17 @@ def train_epoch(layers, inputs: ArrayBool, targets: ArrayBool, order: np.ndarray
     def typed(values):
         return List([np.asarray(value) for value in values])
 
-    no_tally = [np.zeros((0, 0), dtype=np.int32), np.zeros(0, dtype=np.int32)]
+    counts = {layer.tally[2] for layer in layers} if tallying else {0}
+    assert len(counts) == 1, "layers started their tallies at different updates"
+    no_tally = [np.zeros((0, 0), dtype=np.int32), np.zeros(0, dtype=np.int32), 0, np.zeros(0, dtype=np.int64)]
     tallies = [layer.tally if tallying else no_tally for layer in layers]
     updates = kernels.train_epoch(
         np.ascontiguousarray(inputs, dtype=np.bool_), np.ascontiguousarray(targets, dtype=np.bool_),
         np.asarray(order, dtype=np.int64), batch_size,
         List([tuple(int(v) for v in layer._params()) for layer in layers]),
         *(typed(getattr(layer, name) for layer in layers) for name in kernels.LAYER_STATE),
-        typed(t[0] for t in tallies), typed(t[1] for t in tallies), tallying,
+        typed(t[0] for t in tallies), typed(t[1] for t in tallies), typed(t[3] for t in tallies),
+        counts.pop(), tallying,
     )
     if tallying:
         for layer in layers:
