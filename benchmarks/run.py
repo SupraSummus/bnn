@@ -41,9 +41,6 @@ from benchmarks.datasets import (
 
 SEEDS = (0, 1, 2)
 
-# Narrow hysteresis, dense initial wiring: hidden layers learn faster, but noisy on wide inputs.
-SMALL_COUNTERS = {"connect_level": 2, "counter_max": 16, "init_range": 2}
-
 COLUMNS = [
     ("random", "Random"),
     ("majority", "Majority"),
@@ -182,10 +179,7 @@ BENCHMARKS = [
         "Adult Income",
         load_adult,
         {"n_epochs": 15, "hidden_sizes": (32, 16), "batch_size": 64},
-        {
-            "n_epochs": 5, "hidden_sizes": (), "batch_size": 16,
-            "layer_kwargs": {"connect_level": 8, "counter_max": 64, "init_range": 12},
-        },
+        {"n_epochs": 5, "hidden_sizes": (), "batch_size": 16},
         {"n_epochs": 3, "n_clauses": 100, "T": 20, "s": 5.0},
     ),
     (
@@ -199,21 +193,21 @@ BENCHMARKS = [
         "Parity-4",
         lambda: load_parity(4),
         {"n_epochs": 50, "hidden_sizes": (8,), "batch_size": 8},
-        {"n_epochs": 300, "hidden_sizes": (32,), "batch_size": 2, "layer_kwargs": SMALL_COUNTERS},
+        {"n_epochs": 300, "hidden_sizes": (32,), "batch_size": 2},
         {"n_epochs": 300, "n_clauses": 32, "T": 8, "s": 20.0},
     ),
     (
         "Parity-8",
         lambda: load_parity(8),
         {"n_epochs": 50, "hidden_sizes": (16, 8), "batch_size": 32},
-        {"n_epochs": 200, "hidden_sizes": (128,), "batch_size": 8, "layer_kwargs": SMALL_COUNTERS},
+        {"n_epochs": 200, "hidden_sizes": (128,), "batch_size": 8},
         {"n_epochs": 100, "n_clauses": 512, "T": 128, "s": 20.0},
     ),
     (
         "Parity-16",
         lambda: load_parity(16),
         {"n_epochs": 10, "hidden_sizes": (32, 16), "batch_size": 64},
-        {"n_epochs": 20, "hidden_sizes": (256,), "batch_size": 32, "layer_kwargs": SMALL_COUNTERS},
+        {"n_epochs": 20, "hidden_sizes": (256,), "batch_size": 32},
         {"n_epochs": 1, "n_clauses": 100, "T": 50, "s": 20.0},
     ),
 ]

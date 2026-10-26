@@ -5,9 +5,9 @@ from bnn.counter import CounterDense, train_epoch
 from bnn.counter_reference import ReferenceCounterDense
 
 
-def make_layer(weights, thresholds, **kwargs):
+def make_layer(weights, thresholds, layer_class=CounterDense, **kwargs):
     weights = np.array(weights, dtype=np.int8)
-    layer = CounterDense(
+    layer = layer_class(
         weights.shape[1], weights.shape[0],
         rng=np.random.default_rng(0), **kwargs,
     )
@@ -37,25 +37,54 @@ def test_synapse_needs_repeated_evidence():
     assert layer.weights[0, 0] == -1
 
 
-def test_backward_blames_only_near_threshold():
-    # neuron 0 misses firing by one, neuron 1 by three
-    layer = make_layer([[1, 1, 0, 0], [0, 0, 1, 1]], [1, 3], backprop_margin=1)
-    inputs = np.array([[False, False, False, False]])
-    _, state = layer.forward(inputs)
+def test_pressure_passes_through_window():
+    # distances to flipping 0, 1 and 2; only outputs closer than the window pass pressure, 1 / (distance + 1) of it
+    layer = make_layer([[1, 1, 0, 0, 0, 0], [0, 0, 1, 1, 0, 0], [0, 0, 0, 0, 1, 1]], [1, 2, 3], window=2)
+    _, state = layer.forward(np.zeros((1, 6), dtype=bool))
+    too_much, not_enough = layer.backward(state, np.zeros((1, 3)), np.ones((1, 3)))
+    np.testing.assert_array_almost_equal(not_enough, [[1, 1, 0.5, 0.5, 0, 0]])
+    np.testing.assert_array_almost_equal(too_much, np.zeros((1, 6)))
+
+
+def test_pressure_counts_collateral_damage():
+    # input 0 would turn output 0 on, but also turn off output 1, which is right and should stay on
+    layer = make_layer([[1, 1], [-1, 0]], [1, 0])
+    _, state = layer.forward(np.zeros((1, 2), dtype=bool))
     too_much, not_enough = layer.backward(state, np.zeros((1, 2)), np.ones((1, 2)))
-    # one flip of input 0 or 1 fixes neuron 0: each gets half; neuron 1 is too far, no blame
-    np.testing.assert_array_almost_equal(not_enough, [[0.5, 0.5, 0, 0]])
-    np.testing.assert_array_almost_equal(too_much, [[0, 0, 0, 0]])
+    np.testing.assert_array_almost_equal(not_enough, [[0, 1]])
+    np.testing.assert_array_almost_equal(too_much, [[0, 0]])
 
 
-def test_backward_counts_collateral_damage():
-    # input 0 would fix neuron 0, but neuron 1 (fine, sitting right at threshold) would break
-    layer = make_layer([[1, 1], [-1, 0]], [1, 0], backprop_margin=1)
-    inputs = np.array([[False, False]])
-    _, state = layer.forward(inputs)
-    _, not_enough = layer.backward(state, np.zeros((1, 2)), np.array([[1.0, 0.0]]))
-    assert not_enough[0, 0] == 0
-    assert not_enough[0, 1] == 0.5
+def test_pressure_from_several_outputs_scales_with_sqrt():
+    layer = make_layer([[1], [1]], [1, 1])
+    _, state = layer.forward(np.zeros((1, 1), dtype=bool))
+    _, not_enough = layer.backward(state, np.zeros((1, 2)), np.ones((1, 2)))
+    np.testing.assert_array_almost_equal(not_enough, [[np.sqrt(2)]])
+
+
+def test_output_pressure_hinge():
+    # margins 5, 0 and -1
+    for layer_class in (CounterDense, ReferenceCounterDense):
+        layer = make_layer([[0], [0], [0]], [-5, 0, 1], layer_class=layer_class, hinge=2)
+        _, state = layer.forward(np.zeros((2, 1), dtype=bool))
+        targets = np.array([[True, True, True], [False, False, False]])
+        too_much, not_enough = layer.output_pressure(state, targets)
+        # right by 5 sends nothing; right by 0 (margin 0 or -1) and wrong push toward the target
+        np.testing.assert_array_equal(not_enough - too_much, [[0, 1, 1], [-1, -1, -1]])
+
+
+def test_homeostasis_revives_constant_unit():
+    rng = np.random.default_rng(0)
+    for layer_class in (CounterDense, ReferenceCounterDense):
+        layer = make_layer([[1, 1]], [-5], layer_class=layer_class, homeostasis=8)
+        inputs = rng.random((400, 2)) < 0.5
+        for batch in np.split(inputs, 40):
+            _, state = layer.forward(batch)
+            layer.backward(state, np.zeros((10, 1)), np.zeros((10, 1)))
+            layer.update()
+        # always on at first; now its threshold sits at its mean input sum (1)
+        assert layer.thresholds[0] == 1
+        assert 0 < layer.forward(inputs)[0].mean() < 1
 
 
 def test_learns_parity_4():
@@ -63,15 +92,14 @@ def test_learns_parity_4():
     y = X.sum(axis=1) % 2
     targets = np.stack([y == 0, y == 1], axis=1)
     rng = np.random.default_rng(0)
-    small = dict(connect_level=2, counter_max=16, init_range=2)
     network = Sequence([
-        CounterDense(4, 32, accept_distance=0, rng=rng, **small),
-        CounterDense(32, 2, stabilize_margin=2, rng=rng, **small),
+        CounterDense(4, 32, accept_distance=0, homeostasis=64, rng=rng),
+        CounterDense(32, 2, stabilize_margin=2, rng=rng),
     ])
     for _ in range(300):
         for batch in np.split(rng.permutation(16), 8):
-            out, state = network.forward(X[batch])
-            network.backward(state, out & ~targets[batch], ~out & targets[batch])
+            _, state = network.forward(X[batch])
+            network.backward(state, *network.layers[-1].output_pressure(state[-1], targets[batch]))
             network.update()
     # a single threshold unit can't get more than 11/16 right
     assert np.mean(network.margins(X).argmax(axis=1) == y) >= 14 / 16
@@ -100,6 +128,8 @@ def assert_same_state(fast, reference):
     np.testing.assert_array_equal(fast.weights, reference.weights)
     np.testing.assert_array_equal(fast.thresholds, reference.thresholds)
     np.testing.assert_array_equal(fast.threshold_counters, reference.threshold_counters)
+    np.testing.assert_array_equal(fast.homeo_mean, reference.homeo_mean)
+    np.testing.assert_array_equal(fast.homeo_run, reference.homeo_run)
 
 
 def test_kernels_match_reference_step():
@@ -107,8 +137,9 @@ def test_kernels_match_reference_step():
     rng = np.random.default_rng(1)
     for kwargs in [
         {},
-        {"accept_distance": 0, "backprop_margin": 3},
+        {"accept_distance": 0, "window": 30},
         {"stabilize_margin": 2, "connect_level": 2, "init_range": 3},
+        {"accept_distance": 1, "homeostasis": 5},
     ]:
         fast = CounterDense(150, 7, rng=np.random.default_rng(2), **kwargs)
         reference = ReferenceCounterDense(150, 7, rng=np.random.default_rng(2), **kwargs)
@@ -122,22 +153,19 @@ def test_kernels_match_reference_step():
             ref_out, ref_state = reference.forward(inputs)
             np.testing.assert_array_equal(out, ref_out)
             np.testing.assert_array_equal(fast.margins(inputs), reference.margins(inputs))
-            # blame sums shares over outputs; BLAS may add them in another order
-            np.testing.assert_allclose(
-                fast.backward(state, too_much, not_enough),
-                reference.backward(ref_state, too_much, not_enough),
-                rtol=1e-6,
-            )
+            # the reference adds pressure in the kernels' order: exact, not just close
+            for f, r in zip(fast.backward(state, too_much, not_enough), reference.backward(ref_state, too_much, not_enough)):
+                np.testing.assert_array_equal(f, r)
             fast.update()
             reference.update()
             assert_same_state(fast, reference)
 
 
-def train(layer_class, X, y, hidden, epochs, batch_size, fused=False, **kwargs):
+def train(layer_class, X, y, hidden, epochs, batch_size, fused=False, homeostasis=0, **kwargs):
     rng = np.random.default_rng(0)
     sizes = [X.shape[1], *hidden]
     layers = [
-        layer_class(n_in, n_out, accept_distance=0, rng=rng, **kwargs)
+        layer_class(n_in, n_out, accept_distance=0, homeostasis=homeostasis, rng=rng, **kwargs)
         for n_in, n_out in zip(sizes, sizes[1:])
     ]
     layers.append(layer_class(sizes[-1], 2, stabilize_margin=2, rng=rng, **kwargs))
@@ -153,8 +181,8 @@ def train(layer_class, X, y, hidden, epochs, batch_size, fused=False, **kwargs):
             continue
         for start in range(0, len(X), batch_size):
             batch = order[start:start + batch_size]
-            out, state = network.forward(X[batch])
-            network.backward(state, (out & ~targets[batch]).astype(np.float32), (~out & targets[batch]).astype(np.float32))
+            _, state = network.forward(X[batch])
+            network.backward(state, *layers[-1].output_pressure(state[-1], targets[batch]))
             network.update()
     for layer in layers:
         layer.consolidate()
@@ -162,13 +190,12 @@ def train(layer_class, X, y, hidden, epochs, batch_size, fused=False, **kwargs):
 
 
 def test_kernels_match_reference_training():
-    # two output classes: the blame passed down sums at most two shares, so float order can't differ
     rng = np.random.default_rng(3)
     X = random_inputs(rng, 200, 70)
     y = (X[:, :5].sum(axis=1) + X[:, 60]) % 2
-    for hidden in [(), (24,)]:
-        fast = train(CounterDense, X, y, hidden, epochs=4, batch_size=8, connect_level=2, counter_max=16, init_range=2)
-        reference = train(ReferenceCounterDense, X, y, hidden, epochs=4, batch_size=8, connect_level=2, counter_max=16, init_range=2)
+    for hidden in [(), (24,), (24, 12)]:
+        fast = train(CounterDense, X, y, hidden, epochs=4, batch_size=8, homeostasis=16)
+        reference = train(ReferenceCounterDense, X, y, hidden, epochs=4, batch_size=8, homeostasis=16)
         for f, r in zip(fast, reference):
             assert_same_state(f, r)
 
@@ -177,8 +204,8 @@ def test_fused_epoch_matches_layer_by_layer():
     rng = np.random.default_rng(4)
     X = random_inputs(rng, 150, 130)
     y = (X[:, :3].sum(axis=1) + X[:, 100]) % 2
-    for hidden in [(), (20,), (20, 12)]:
-        fused = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, fused=True)
-        stepped = train(CounterDense, X, y, hidden, epochs=3, batch_size=7)
+    for hidden, homeostasis in [((), 0), ((20,), 0), ((20, 12), 0), ((20, 12), 16)]:
+        fused = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, fused=True, homeostasis=homeostasis)
+        stepped = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, homeostasis=homeostasis)
         for f, s in zip(fused, stepped):
             assert_same_state(f, s)

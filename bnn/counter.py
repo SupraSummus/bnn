@@ -3,11 +3,14 @@ Binary threshold layer whose synapses are backed by hidden integer counters.
 
 Every (neuron, input) pair has a bounded counter; the visible synapse is
 exciting when counter >= connect_level, inhibiting when <= -connect_level,
-absent otherwise. Errors move counters by one, so a synapse changes only after
+absent otherwise. Votes move counters by one, so a synapse changes only after
 consistent evidence. Thresholds get the same treatment.
 
-Learned state is integer. Floats only carry error strengths between layers and
-are turned into binary events (stochastic rounding) before they touch a counter.
+Learning is driven by pressure: a signed float per output (> 0: wants more
+excitation). The output layer gets +1/-1 toward its targets (zero where it is
+right by a margin); every layer passes pressure down to its inputs through the
+outputs near their threshold, and turns it into binary votes (stochastic
+rounding) before it touches a counter. Learned state is integer.
 
 The heavy lifting is in compiled kernels (`counter_kernels`, numba, bit-packed
 synapses); `counter_reference` has the same rule in plain numpy.
@@ -29,40 +32,63 @@ class CounterDense(Layer):
         self,
         input_features: int,
         output_features: int,
-        connect_level: int = 4,
-        counter_max: int = 32,
+        connect_level: Optional[int] = None,
+        counter_max: Optional[int] = None,
         init_range: Optional[int] = None,
         threshold_level: int = 4,
-        backprop_margin: int = 2,
+        window: Optional[int] = None,
         accept_distance: Optional[int] = None,
         stabilize_margin: int = 0,
+        hinge: Optional[int] = None,
+        homeostasis: int = 0,
         rng: Optional[np.random.Generator] = None,
     ):
         """
+        Margins (input sum minus threshold) spread like sqrt(input_features),
+        so the defaults that are distances scale with it.
+
         Args:
             connect_level: |counter| needed for a synapse to exist.
-            counter_max: counters are clipped to [-counter_max, counter_max].
+                Default 0.7 * sqrt(input_features), at least 2.
+            counter_max: counters are clipped to [-counter_max, counter_max]. Default 8 * connect_level.
             init_range: counters start uniform in [-init_range, init_range].
                 Default 1.5 * connect_level connects about half the synapses,
-                which gives blame paths to flow down.
-            threshold_level: net error votes needed to move a threshold by 1.
-            backprop_margin: a neuron needing more input flips than this to become
-                correct doesn't blame its inputs, it fixes itself.
-            accept_distance: ignore requests to flip a neuron further than this
+                which gives pressure paths to flow down.
+            threshold_level: net votes needed to move a threshold by 1.
+            window: only outputs closer than this to flipping pass pressure to their inputs,
+                each 1 / (distance + 1) of it. Default sqrt(input_features), about one margin spread.
+            accept_distance: ignore pressure to flip an output further than this
                 from flipping (minimal disturbance). 0 for hidden layers, None for
                 the output layer, whose errors are all real.
-            stabilize_margin: reinforce error-free outputs closer than this to
-                flipping. Output layer only, where no error means correct.
+            stabilize_margin: an output whose state agrees with its pressure but is closer
+                than this to flipping votes to stay. Output layer only.
+            hinge: output_pressure sends nothing for outputs right by at least this;
+                they no longer push the layers below. Output layer only.
+                Default sqrt(input_features) / 3, at least stabilize_margin.
+            homeostasis: a unit whose output was the same on this many samples in a row
+                moves its threshold to the running mean of its input sum (revives units that
+                no pressure can reach). Hidden layers; 0 = off.
         """
+        fan_in = np.sqrt(input_features)
+        if connect_level is None:
+            connect_level = max(2, int(round(0.7 * fan_in)))
+        if counter_max is None:
+            counter_max = 8 * connect_level
+        if window is None:
+            window = max(1, int(round(fan_in)))
+        if hinge is None:
+            hinge = max(stabilize_margin, int(round(fan_in / 3)))
         assert 0 < connect_level <= counter_max
         self.input_features = input_features
         self.output_features = output_features
         self.connect_level = connect_level
         self.counter_max = counter_max
         self.threshold_level = threshold_level
-        self.backprop_margin = backprop_margin
+        self.window = window
         self.accept_distance = accept_distance
         self.stabilize_margin = stabilize_margin
+        self.hinge = hinge
+        self.homeostasis = homeostasis
         self.rng = rng if rng is not None else np.random.default_rng()
 
         if init_range is None:
@@ -71,10 +97,14 @@ class CounterDense(Layer):
             self.rng.integers(-init_range, init_range + 1, size=(output_features, input_features)),
             -counter_max, counter_max,
         ).astype(np.int16)
-        # the kernels' own generator, seeded from rng: they draw one number per nonzero error signal
+        # the kernels' own generator, seeded from rng: they draw one number per nonzero pressure
         self.rng_state = self.rng.integers(0, 2**64, size=4, dtype=np.uint64) | np.uint64(1)
         self.thresholds = np.zeros(output_features, dtype=np.int32)
         self.threshold_counters = np.zeros(output_features, dtype=np.int32)
+        # homeostasis: run of identical outputs, last output, running mean of the input sum
+        self.homeo_run = np.zeros(output_features, dtype=np.int64)
+        self.homeo_last = np.zeros(output_features, dtype=np.bool_)
+        self.homeo_mean = np.zeros(output_features, dtype=np.float64)
         self.tally = None
         self._sync_weights()
         self._reset_state()
@@ -89,23 +119,32 @@ class CounterDense(Layer):
         margins = kernels.margins(bits, self.exc, self.inh, self.thresholds)
         return margins >= 0, (inputs, bits, margins)
 
+    def output_pressure(self, state, targets: ArrayBool):
+        """(too_much, not_enough) for this layer as the output layer, from the forward state."""
+        _, _, margins = state
+        q = kernels.output_pressure(margins, np.ascontiguousarray(targets, dtype=np.bool_), self.hinge)
+        return np.maximum(-q, 0), np.maximum(q, 0)
+
     def backward(self, state, too_much: ArrayFloat, not_enough: ArrayFloat):
         """
-        Net out "too much" and "not enough", turn what asks for a flip into binary events,
-        vote on counters and thresholds, and pass blame to the inputs that could make the flip.
+        Net out "too much" and "not enough" into pressure, turn it into binary votes
+        on counters and thresholds, and pass pressure down to the inputs.
         `ReferenceCounterDense.backward` spells the rule out in array form.
         """
-        inputs, bits, margins = state
+        inputs, _, margins = state
         assert too_much.shape == margins.shape
         assert not_enough.shape == margins.shape
-        wish = np.asarray(not_enough, dtype=np.float32) - np.asarray(too_much, dtype=np.float32)
-        _, _, _, backprop_margin, accept_distance, stabilize_margin = self._params()
-        return kernels.backward(
-            np.ascontiguousarray(inputs, dtype=np.bool_), bits, margins, wish,
-            self.weights, self.exc, self.inh,
-            backprop_margin, accept_distance, stabilize_margin, True,
+        pressure = np.asarray(not_enough, dtype=np.float32) - np.asarray(too_much, dtype=np.float32)
+        _, _, _, window, accept_distance, stabilize_margin, homeostasis, _ = self._params()
+        q_in = kernels.backward(
+            np.ascontiguousarray(inputs, dtype=np.bool_), margins, pressure, self.weights,
+            window, accept_distance, stabilize_margin, True,
             self.counter_delta, self.threshold_delta, self.touched, self.rng_state,
         )
+        if homeostasis > 0:
+            kernels.homeostasis(margins, self.thresholds, self.threshold_counters, homeostasis,
+                                self.homeo_run, self.homeo_last, self.homeo_mean)
+        return np.maximum(-q_in, 0), np.maximum(q_in, 0)
 
     def update(self):
         tally_weights, tally_since, tally_count = self._tally_rows()
@@ -143,11 +182,11 @@ class CounterDense(Layer):
         self._sync_weights()
 
     def _params(self):
-        """Scalar settings in the order kernels.train_epoch unpacks them."""
+        """Integer settings in the order kernels.train_epoch unpacks them."""
         accept_distance = NO_LIMIT if self.accept_distance is None else self.accept_distance
         return (
             self.connect_level, self.counter_max, self.threshold_level,
-            self.backprop_margin, accept_distance, self.stabilize_margin,
+            self.window, accept_distance, self.stabilize_margin, self.homeostasis, self.hinge,
         )
 
     def _add_to_tally(self):
@@ -194,8 +233,8 @@ def train_epoch(layers, inputs: ArrayBool, targets: ArrayBool, order: np.ndarray
     """
     One epoch of a stack of CounterDense layers as a single compiled loop.
     Same result as, for each batch of `order`: forward through the layers,
-    backward with too_much = out & ~targets and not_enough = ~out & targets, update
-    (minus the first layer's input blame, which nobody reads).
+    backward from the last layer's output_pressure(targets), update
+    (minus the first layer's input pressure, which nobody reads).
     Tallies layers that have started one.
     """
     tallying = layers[0].tally is not None
@@ -219,3 +258,18 @@ def train_epoch(layers, inputs: ArrayBool, targets: ArrayBool, order: np.ndarray
     if tallying:
         for layer in layers:
             layer.tally[2] += updates
+
+
+def refit_readout(layers, inputs: ArrayBool, targets: ArrayBool, order: np.ndarray, batch_size: int):
+    """
+    After consolidation: one more epoch of the last layer alone on the code the consolidated layers
+    below produce, tallied and consolidated. Each layer was averaged on its own, so the averaged
+    hidden code is one no layer above has seen; the readout is fitted to the code it will get.
+    """
+    code = inputs
+    for layer in layers[:-1]:
+        code = layer.margins(code) >= 0
+    readout = layers[-1]
+    readout.start_tally()
+    train_epoch([readout], code, targets, order, batch_size)
+    readout.consolidate()

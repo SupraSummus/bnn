@@ -59,39 +59,54 @@ As for batch learning, yes there is a way to do it. Instead of performing learni
 
 `bnn/dense.py` implements the idea above literally.
 `bnn/counter.py` keeps the same neuron
-(binary in/out, ternary synapses, integer threshold, "too much"/"not enough" flowing down)
+(binary in/out, ternary synapses, integer threshold, "too much"/"not enough" flowing down as signed pressure)
 but changes how it decides.
 Roughly in order of impact:
 
 1. **Integer counter under every synapse.**
-   The synapse exists only while `|counter| >= connect_level`, and errors move the counter by one,
+   The synapse exists only while `|counter| >= connect_level`, and votes move the counter by one,
    so synapses change only after consistent evidence.
    `Dense` decided from one batch and forgot, so learning faster made it worse.
 2. **Inactive inputs learn too**, in the opposite direction (a perceptron on ±1 inputs).
    Otherwise a neuron can become more eager but never more selective.
-3. **Margin-aware blame.**
-   A neuron `n` flips away from correct blames its inputs only if `n <= backprop_margin`,
-   spreading `n` expected flips over the inputs that could provide them,
-   minus the outputs such a flip would break.
+3. **Pressure flowing down.**
+   Every output gets a signed pressure (> 0: wants more excitation),
+   +1/-1 toward its target in the output layer, right outputs included: that is what protects them.
+   A layer passes pressure to its inputs through the outputs closer than `window` to their threshold,
+   each `1 / (distance + 1)` of it (a surrogate derivative of the step),
+   summed per input and divided by the square root of how many such outputs feed it.
+   Without the square root the signal grows ×3 per layer; the blame this replaced shrank it ×0.05.
+   With it plain chains learn parity-8 at depth 1 to 8 (see "Wider and deeper").
 4. **Minimal disturbance** (`accept_distance=0` in hidden layers):
-   only neurons one input away from flipping accept a request.
+   only neurons one input away from flipping take a flip.
    Together with dense initial wiring, this is what made parity learnable.
-5. **Output margin** (`stabilize_margin`): correct but fragile outputs get reinforced.
-6. **Classes picked by margin**, not argmax over binary outputs (ties went to class 0).
-7. **Consolidation.**
+   Letting the whole window vote instead broke even 4 hidden layers.
+5. **Output margin and hinge.** Correct but fragile outputs get reinforced (`stabilize_margin`),
+   and outputs right by at least `hinge` (`sqrt(fan_in) / 3`) send no pressure.
+   Without the hinge, samples the net already handles keep reshaping the layers below,
+   and deep nets collapse after they break through (0.78 → 0.22 on parity-8).
+6. **Homeostasis** (hidden layers): a unit whose output was the same on 256 samples in a row
+   moves its threshold to the running mean of its input sum.
+   Units reading another hidden layer drift far from threshold within a few epochs,
+   and with minimal disturbance nothing ever brings them back: deep nets stay at chance without this.
+   Pushing every unit toward 50% activity instead hurts everywhere.
+7. **Classes picked by margin**, not argmax over binary outputs (ties went to class 0).
+8. **Consolidation.**
    The state after the last update is a noisy sample:
    test accuracy on Fashion-MNIST swung by ±0.03 from epoch to epoch.
    So the last epoch is tallied, and each synapse keeps its average state (rounded to -1/0/1),
    each threshold its average.
    The result is still ternary: +0.04 on Fashion-MNIST, +0.02 on Adult, +0.19 on parity-8,
    -0.015 on Breast Cancer (455 samples).
+   Each layer is averaged on its own, so in a deep net the averaged hidden code is one
+   the output never saw (Adult with 3 hidden layers: 0.84 before, 0.76 after, in 1-2 seeds of 6).
+   So the output layer is then refitted for one epoch on the consolidated code (`counter.refit_readout`).
 
-The counter scale is a trade-off:
-narrow (`connect_level=2`) helps hidden layers learn parity,
-wide (`connect_level=8` or 16) keeps wide pixel inputs from oscillating.
-On wide inputs thresholds should also move faster (`threshold_level=1`); parity prefers 4.
-Benchmarks set both per dataset.
-Homeostatic thresholds, sparse potential pools and per-update step caps were tried and didn't help.
+Margins spread like `sqrt(fan_in)`, and so do the defaults of `connect_level` (`0.7 * sqrt(fan_in)`,
+what Adult and Breast Cancer had been tuned to by hand), `window` and `hinge`.
+Wide pixel inputs still want thresholds to move faster (`threshold_level=1`);
+Fashion-MNIST keeps its hand-set `connect_level=16` (the default 28 gives the same 0.84).
+Sparse potential pools and per-update step caps were tried and didn't help.
 Open problems are in [TODO.md](TODO.md).
 
 ## Benchmark results
@@ -104,32 +119,56 @@ Parity is scored on the full truth table.
 | Dataset       | Majority | LogReg | DTree | RForest | Tsetlin | Dense | Counter |
 |---------------|---------:|-------:|------:|--------:|--------:|------:|--------:|
 | Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.842 |
-| Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 0.995 |
+| Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 1.000 |
 | Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.844 |
 | Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.915 |
 | Parity-4      | 0.500 | 0.500 | 1.000 | 1.000 | 1.000 | 0.500 | 1.000 |
-| Parity-8      | 0.500 | 0.500 | 1.000 | 1.000 | 0.510 | 0.500 | 0.856 |
-| Parity-16     | 0.500 | 0.500 | 1.000 | 1.000 | 0.500 | 0.500 | 0.574 |
+| Parity-8      | 0.500 | 0.500 | 1.000 | 1.000 | 0.510 | 0.500 | 1.000 |
+| Parity-16     | 0.500 | 0.500 | 1.000 | 1.000 | 0.500 | 0.500 | 1.000 |
 
 ¹ trained on 5000 samples to keep the run short.
-Counter uses no hidden layer on Fashion-MNIST, Adult and Breast Cancer, where one still hurts.
-Over 10 seeds: parity-4 1.000, parity-8 0.90 ± 0.05, parity-16 0.58 ± 0.04.
+Counter uses no hidden layer on Fashion-MNIST, Adult and Breast Cancer.
+On Adult and Breast Cancer 1-3 hidden layers of 32 now give the same (0.845-0.846, 0.906-0.915),
+on Fashion-MNIST a hidden layer still hurts (below).
+Over 10 seeds parity-4, -8 and -16 are solved every time, Mushroom in 9 (0.9999)
+(before the pressure rule: parity-8 0.90 ± 0.05, parity-16 0.58 ± 0.04, Mushroom 0.995).
 
 ## Speed
 
 `CounterDense` trains in numba kernels (`bnn/counter_kernels.py`);
-`bnn/counter_reference.py` is the same rule in numpy, and the tests check the two agree bit for bit.
+`bnn/counter_reference.py` is the same rule in numpy, adding pressure in the kernels' order,
+and the tests check the two agree bit for bit, deep nets and homeostasis included.
 
 * Synapses and binary activity are packed into 64-bit words:
   a neuron's input sum is `popcount(x & exc) - popcount(x & inh)`.
-* Backward looks only at outputs with an error signal (all of them in the output layer, which keeps a margin)
-  and touches whole input rows only for outputs that vote or blame.
+* Backward looks only at outputs with nonzero pressure and touches whole input rows only for outputs
+  that vote or pass pressure down (those within the window).
 * A whole epoch is one compiled call (`counter.train_epoch`); per batch, the numpy glue cost more than the kernels.
 * Consolidation tallies a synapse row only when the update kernel touches it
   (and the rest at the end), so the tallied epoch costs what any other does
   (Fashion-MNIST with 4096 hidden units: 13 s → 3.1 s).
-* Each layer draws from its own xoshiro256+ stream, one number per nonzero error signal,
+* Each layer draws from its own xoshiro256+ stream, one number per output that may vote,
   so an epoch in one call and batch by batch give the same result.
+
+## Wider and deeper
+
+Seconds per epoch on Fashion-MNIST (60k samples, batch 32, one core):
+no hidden layer 0.07, 1024 hidden 1.6, 4096 hidden 6.1.
+Half of it is the hidden forward pass, linear in width × input words;
+the rest is the hidden layer learning (each vote moves 1568 counters), which the old blame hardly did.
+Evaluating 60k samples costs about an epoch (the full margin matrix is allocated).
+
+* **Width on pixels is random features.** Fashion-MNIST, 5 epochs:
+  a hidden layer frozen at its random initialization gives 0.82 / 0.85 / 0.868 with 1024 / 4096 / 16384 units
+  (1 seed), beating one layer (0.84) and logistic regression (0.847).
+  Learning that layer doesn't help: the blame rule gave 0.80 / 0.85, the pressure rule 0.806 / 0.806 (3 seeds).
+* **Depth.** Parity-8, plain chains, `benchmarks.bnn_model.train_and_evaluate` defaults, 3 seeds:
+  solved at depth 1 to 6 with widths 64 to 256, 0.97-1.00 at depth 8 with widths 32 to 128
+  (seed-sensitive: another random stream gave 8×128 a seed at 0.66), 12×64 0.60.
+  Deep nets sit at chance for a while and then break through within ~100 epochs;
+  a linear probe on the first hidden layer shows the feature ~100 epochs before accuracy moves.
+  Before the pressure rule 3 hidden layers didn't learn parity at all.
+  Open problems and what didn't work are in TODO.md.
 
 ## Biological parallels
 
@@ -143,5 +182,7 @@ Over 10 seeds: parity-4 1.000, parity-8 0.90 ± 0.05, parity-16 0.58 ± 0.04.
 * Tsetlin Machine, Granmo 2018, [arXiv:1804.01508](https://arxiv.org/abs/1804.01508) -- baseline in `bnn/tsetlin.py`.
 * SBPI: Baldassi et al., *Efficient supervised learning in networks with binary synapses*, PNAS 2007 -- hidden discrete states, margin-gated updates.
 * MADALINE Rule II: Winter & Widrow 1988 -- minimal disturbance in multilayer threshold nets.
+* Straight-through estimator: Bengio, Léonard, Courville 2013, [arXiv:1308.3432](https://arxiv.org/abs/1308.3432) -- a surrogate derivative for a step.
+* Schoenholz et al., *Deep Information Propagation*, ICLR 2017 -- deep nets train only near the edge between a vanishing and an exploding signal.
 * HTM spatial pooler: Cui, Ahmad, Hawkins 2017 -- permanences, sparse binary activity.
 * Friesen & Domingos, *Deep Learning as a Mixed Convex-Combinatorial Optimization Problem*, ICLR 2018 -- hidden binary targets as a combinatorial problem.
