@@ -3,12 +3,22 @@
 ## CounterDense
 
 * Depth. The pressure rule trains plain chains on parity-8 at depth 1-8 (README). Open:
-  * Parity-16 with 3×64 learns and falls back (raw accuracy 0.92, 0.52, 0.86, 0.50 ... every few epochs,
-    2048 updates an epoch), and the average over the last epoch is a 0.5 net. 2×256 is solved.
-    Not the homeostasis run length (256, 2048 and 16384 behave the same).
+  * Parity-16 with 3×64 learned and fell back every few epochs (raw 0.92, 0.52, 0.86, 0.50 ..., consolidated 0.5);
+    the ratchet holds it at 0.97 (README). What falls back is the input layer: at 0.96 accuracy it still changes
+    11% of its code bits every 128 updates, and freezing it alone at a good state keeps 0.96-0.97.
+    A slower input layer (connect_level ×2, ×4) never leaves chance: its churn is the search.
+    Also stops the fall, not in the code: hidden votes ×(running error rate) (0.94 without the ratchet),
+    but Mushroom then freezes before its last errors are fixed (1.000 → 0.995-0.998, with a floor on the factor too).
+    Didn't help: stabilizing votes in hidden layers, consolidating every 64 or 512 updates (stays at chance),
+    equalizing how often units vote. A ratchet on the input layer alone is untested.
   * Parity-8: depth 8 is seed-sensitive (8×128 gave 1.00 in 3 seeds, 0.84 in 3 others), 12×64 doesn't break through (0.60).
-  * Both look like a constant learning rate over many updates.
-    Untested: annealing the vote probability, online consolidation (below).
+    12×64 loses no information (every layer's code stays injective on the 256 inputs).
+    Its middle layers' plasticity blocks it: initialized as exact identities and frozen, 12×64 learns in ~20 epochs.
+    A copy of an input sits at distance 0 on every sample, so minimal disturbance makes it the most plastic unit;
+    once one wire breaks, homeostasis turns the copies above it into constants.
+    Slower identities: synapses ×4, ×16 no; synapses and thresholds ×4 1 seed of 2.
+    Copies with a margin (k redundant wires, threshold k/2) are untried.
+  * Untested: annealing the vote probability.
   * Diagnostics that helped: accepted votes per sample, layer by layer (the signal's branching ratio, should stay near 1);
     correlation of a unit's pressure with the effect of actually flipping it;
     a linear probe on each layer's code, which shows a feature ~100 epochs before accuracy moves.
@@ -19,9 +29,19 @@
     against collapse: protecting fragile hidden units, lower vote rates, bigger counters (the hinge works);
     homeostasis toward 50% activity, re-centering only at init, moving thresholds on requests too far to accept;
     an output reading every hidden layer (solves wide parity by shortcut: any one layer can be cut).
-* Hidden layers on pixels still don't beat a single layer:
-  Fashion-MNIST 0.806 with 1024 or 4096 hidden units (one layer 0.84; a frozen random layer of 4096 0.85).
-  What the hidden layer learns there is worth less than its random initialization.
+* Hidden layers on pixels beat a single layer only when learned slowly (README, "Wider and deeper"):
+  4096 units at `connect_level=256` 0.855, one layer 0.847, random forest 0.875.
+  The speed is set per benchmark (`hidden_kwargs`): parity wants the opposite (hidden counters ×4: parity-8 1.00 → 0.68).
+  It should follow from whether random features are already good, not be hand-set.
+  * At the default speed the units collapse onto each other (mean |correlation| 0.16 → 0.31,
+    5% have a twin at > 0.93): units with similar readout columns get the same pressure.
+    A hidden counter on pixels drifts ~17 per epoch (rms), so `connect_level` 16 leaves the random features within an epoch.
+  * 1024 units, 1 seed each: frozen 0.818, default 0.791, connect_level 256 0.834, 4096 0.830 (0.6% of synapses change:
+    the thresholds do most of it). Recycling near-twins every epoch 0.805.
+    Exact flip gains as the hidden pressure (the readout column is all that changes): 256 / 1024 units
+    0.783 → 0.803 / 0.791 → 0.813, nothing on Adult and parity; letting only the k best units vote per sample: no change.
+  * Two slow layers do worse (4096+1024 0.821, 4096+4096 0.841), 16384 slow units 0.865 (frozen 0.863),
+    Adult with 1024 slow units 0.847 (none 0.845). 1 seed each.
   Tried before the pressure rule (10k-sample subset, 1-bit pixels, no consolidation, unless noted):
   * Useful diagnostic: freeze a trained output layer and train only the hidden one.
     With the old blame, training accuracy *drops* (0.71 → 0.35):
@@ -41,8 +61,14 @@
     Full data, 2-bit pixels, consolidated, 1 seed: Fashion-MNIST 0.840 → 0.845-0.850 after 10 rounds,
     Adult 0.839 → ~0.84; training accuracy rises more (0.88 on Fashion-MNIST).
     Not worth its code yet.
-* Consolidation happens once, after training.
-  An online version (a slow trace that takes over from the fast state) is untested.
+* Exact moves below the last hidden layer: flipping a unit and propagating the flip up
+  gives no signal (parity-8 3×32 0.61, parity-16 3×64 0.50): a single flip is almost always absorbed above.
+  Something between that and the surrogate (the flip's effect on the next layer's margins) is untested.
+  Full-batch exact descent on a hidden layer predicts each unit's gain alone and overestimates the joint effect ×5.
+* Function-preserving moves find little slack in trained nets: output synapses whose removal changes neither
+  training errors nor loss (~6% on Adult, none on Breast Cancer; no effect on test), unused hidden units (re-randomized:
+  no change). One-hot groups have an exact symmetry (all the group's weights +1 and the threshold +1),
+  and the ±1 votes make whole groups drift, but re-centering them changes nothing (Adult 0.844).
 * `threshold_level=4` collapses an output layer reading a wide sparse code
   (1024 units, 32 active: 0.1-0.5 accuracy, vs 0.72 with 1),
   while parity wants 4. How it should depend on fan-in is open
