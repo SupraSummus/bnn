@@ -125,6 +125,9 @@ Over 10 seeds: parity-4 1.000, parity-8 0.90 ± 0.05, parity-16 0.58 ± 0.04.
 * Backward looks only at outputs with an error signal (all of them in the output layer, which keeps a margin)
   and touches whole input rows only for outputs that vote or blame.
 * A whole epoch is one compiled call (`counter.train_epoch`); per batch, the numpy glue cost more than the kernels.
+* Consolidation tallies a synapse row only when the update kernel touches it
+  (and the rest at the end), so the tallied epoch costs what any other does
+  (Fashion-MNIST with 4096 hidden units: 13 s → 3.1 s).
 * Each layer draws from its own xoshiro256+ stream, one number per nonzero error signal,
   so an epoch in one call and batch by batch give the same result.
 

@@ -241,15 +241,23 @@ def backward(
 def update(
     counters, counter_delta, touched, counter_max, connect_level, weights, exc, inh,
     thresholds, threshold_counters, threshold_delta, threshold_level,
+    tally_weights, tally_since, tally_count, tallying,
 ):
     """
     Apply and clear the votes accumulated in touched rows,
     flip the synapses whose counter crossed connect_level.
+    When tallying, a touched row first adds its state over the updates since
+    `tally_since[o]` up to `tally_count`, the number of updates tallied so far.
     """
     n_out, n_in = counters.shape
     for o in range(n_out):
         if touched[o]:
             touched[o] = False
+            if tallying:
+                unchanged = tally_count - tally_since[o]
+                for i in range(n_in):
+                    tally_weights[o, i] += weights[o, i] * unchanged
+                tally_since[o] = tally_count
             flipped = False
             for i in range(n_in):
                 c = min(max(np.int32(counters[o, i]) + counter_delta[o, i], -counter_max), counter_max)
@@ -274,7 +282,7 @@ def train_epoch(
     x, targets, order, batch_size, params,
     counters, counter_delta, touched, weights, exc, inh,
     thresholds, threshold_counters, threshold_delta, rng_state,
-    tally_weights, tally_thresholds, tallying,
+    tally_weights, tally_thresholds, tally_since, tally_count, tallying,
 ):
     """
     Forward, backward and update over every batch of `order` for a stack of layers,
@@ -310,9 +318,9 @@ def train_epoch(
                 counters[k], counter_delta[k], touched[k], counter_max, connect_level,
                 weights[k], exc[k], inh[k],
                 thresholds[k], threshold_counters[k], threshold_delta[k], threshold_level,
+                tally_weights[k], tally_since[k], tally_count + updates, tallying,
             )
             if tallying:
-                tally_weights[k] += weights[k]
                 tally_thresholds[k] += thresholds[k]
         updates += 1
     return updates

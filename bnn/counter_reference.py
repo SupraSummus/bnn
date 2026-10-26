@@ -95,3 +95,10 @@ class ReferenceCounterDense(CounterDense):
         self._sync_weights()
         self._reset_state()
         self._add_to_tally()
+
+    def _add_to_tally(self):
+        # the whole state after every update; CounterDense adds a row only when it is touched
+        if self.tally is not None:
+            self.tally[0] += self.weights
+            self.tally[3] += 1
+        super()._add_to_tally()
