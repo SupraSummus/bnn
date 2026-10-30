@@ -59,6 +59,21 @@
 * Counter scale from fan-in (`0.7 * sqrt(fan_in)`) works on every benchmark but Fashion-MNIST,
   which keeps `threshold_level=1` (and its hand-set `connect_level=16`, the default gives the same).
 
+## SparseCounter
+
+* Sparse hidden layers don't learn: random and fixed beats every way of learning them tried (README, "Sparse"),
+  as dense ones did before the ladder's gating, which is untried here. Untried: rewiring only units the readout ignores
+  (a unit with no readout synapse is free to move), rewiring by the unit's own pressure history instead of per vote,
+  a slower rewire chance (< 0.01) with counters fixed.
+* Sparse readout: N = 1024 of 4096 0.836, dense 0.853 (1 seed). The slots a class starts with are random;
+  regrowth picks a random active unit, not one that correlates with the class.
+* Only Fashion-MNIST so far. Parity needs learned features (random ones are useless there),
+  so it is the test for learning sparse hidden layers. Deep sparse stacks are untested.
+* `SparseCounter` trains through the per-batch path (`Sequence.forward/backward/update`), not one compiled epoch;
+  4096 × 8 with a dense readout takes ~15 s per epoch.
+* Its kernels repeat CounterDense's rule over slots (the tests pin them to CounterDense). One slot-based rule
+  with the dense layer as all slots, bit-packed, would remove the copy, if it can keep the dense speed.
+
 ## Code
 
 * Kernels are single-threaded; benchmarks use the cores by running models side by side.
@@ -66,8 +81,6 @@
 * `CounterDense` settings split by role: `accept_distance` and `homeostasis` are for hidden layers,
   `stabilize_margin`, `hinge`, `surrogate` and `normalize_reach` for the output (`build_counter_network` sets them).
   A role flag could set them all.
-* `CounterDense.forward/backward/update` now serve only tests and mixing with other layer types;
-  training goes through `counter.train_epoch`. If no other layer type comes back, the per-batch path could go.
 
 * `Dense` and the old `BN`/`ConvBNN` (`bnn/__init__.py`, used by `bnn/mnist.py`) are now dominated by `CounterDense`.
   Decide whether to keep them as history or remove.
