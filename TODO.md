@@ -83,11 +83,20 @@
 
 ## Convolution
 
-* Learned filters lose to random ones (README, "Convolution"), and random second layers lose information.
-  So the deeper convolutional nets that make CNNs strong don't work here yet. The ladder's gating is untried here.
-  Rows vote at 1 / positions; slower filter counters, or votes only from the positions the readout uses, are untried.
-* `ConvCounter` trains through the per-batch path (a 32×5 layer: ~2 min per epoch); random filters are computed once.
-* `OrPool`'s pressure is a guess ("not enough" to the whole block); the alternative is the unit nearest its threshold.
+* One learned conv layer is level with random filters, not past them (README, "Convolution").
+* Conv depth (README, "Does conv depth pay here?"): with a flat readout one layer has all there is, by gradient too.
+  With a 2×2 readout depth pays, and the rule's three learned layers beat random ones (0.73 vs 0.61),
+  0.01-0.03 below gradient descent at 4 epochs; gradient descent keeps improving to 0.80, the rule stops at 4 epochs.
+  Open: why the rule stops; what keeps ~0.4 of each layer's bits changing per epoch;
+  the binary nets' underfitting by gradient (train 0.89 vs 0.98 float), which no optimizer setting changes.
+  Slower votes or filter counters don't help (README); votes only from the positions the readout uses are untried.
+* Homeostasis runs over patch rows: 4096 is a hand setting (256 images per layer was worse for a first layer,
+  where 256 images are 147k rows). A run measured in images, or one setting for dense and conv, is open.
+* `ConvCounter`/`OrPool` run as per-layer kernels, batch by batch (`conv.train_epoch`; 1 thread, Fashion-MNIST:
+  32×5/1,p2 ~14 s per epoch, 32×5/1,p2,64x3/1,p2,64x3/1,p3 ~45 s). Most of the deep net's time is the input pressure
+  of the upper conv layers (`conv_blame`); then forward, votes, homeostasis, each a pass over rows × filters.
+  Fusing them into one pass, or one compiled epoch as `counter_kernels.train_epoch`, is untried.
+* `OrPool`'s pressure is a guess ("not enough" to the whole block); only to the unit nearest its threshold was worse.
 
 ## Code
 

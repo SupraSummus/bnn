@@ -13,5 +13,6 @@
   `bnn/conv.py`'s kernels run the same rule over patches (`conv_tests` pins them to CounterDense);
   who votes and what passes down are `counter_kernels.may_vote` and `passes_down`, shared by all kernels.
 * Experiments with their own scripts: `python -m benchmarks.ladder` (rule vs gradient, part by part),
-  `benchmarks.sparse`, `benchmarks.conv`; usage in each docstring, results in README.
+  `benchmarks.sparse`, `benchmarks.conv` (and `benchmarks.conv_ste`, the same nets by gradient descent, needs torch);
+  usage in each docstring, results in README.
 * `flake8` reports isort errors that predate this code; don't mass-fix them in unrelated changes.
