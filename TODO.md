@@ -8,8 +8,8 @@
   one step for parity. Something a unit measures itself should set it: whether its votes at neighbouring margins agree.
   Summed over a layer the disagreement doesn't show (votes at distance 0 and 1 agree in sign for 0.7-0.8 of counters
   on parity too); it lives in the few units missing one input, which are the ones that learn.
-* Depth on Fashion-MNIST gives nothing, to gradient descent either (README). A task where depth pays for a gradient
-  on this net is needed before depth can test the rule; convolution is the obvious one.
+* Depth on dense Fashion-MNIST gives nothing, to gradient descent either (README).
+  The conv net with a 2×2 readout is where depth pays (TODO, "Convolution").
 * Gradient descent with the usual window-wide surrogate can't learn parity on this net (0.50 everywhere);
   gated at the threshold, like the rule, it gets 0.61-0.81. So the parity benchmarks test a narrow surrogate
   and full wiring (a unit must see every input) more than credit assignment in general.
@@ -77,8 +77,9 @@
   so it is the test for learning sparse hidden layers. Deep sparse stacks are untested.
 * `SparseCounter` trains through the per-batch path (`Sequence.forward/backward/update`), not one compiled epoch;
   4096 × 8 with a dense readout takes ~15 s per epoch.
-* Its kernels repeat CounterDense's rule over slots (the tests pin them to CounterDense). One slot-based rule
-  with the dense layer as all slots, bit-packed, would remove the copy, if it can keep the dense speed.
+* Its kernels repeat CounterDense's vote and pass-down loops over slots, as `bnn/conv.py`'s do over patches
+  (the decisions are shared: `counter_kernels.may_vote`, `passes_down`). One slot-based rule
+  with the dense layer as all slots, bit-packed, would remove the copies, if it can keep the dense speed.
 
 ## Convolution
 

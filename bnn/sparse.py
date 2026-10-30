@@ -23,7 +23,7 @@ from numba import njit
 from . import counter_kernels as kernels
 from .abstract import ArrayBool, ArrayFloat, Layer
 from .counter import NO_LIMIT, resolve_settings
-from .counter_kernels import NONE, TRIANGLE, next_uniform
+from .counter_kernels import may_vote, next_uniform, passes_down
 
 MAX_TRIES = 16  # random picks per rewire request before giving up on finding an active input
 
@@ -62,12 +62,8 @@ def backward(
             q = pressure[b, o]
             if q == 0:
                 continue
-            m = np.int64(margins[b, o])
-            out = m >= 0
-            distance = m if out else -m - 1
-            flip = (q > 0) != out
-            may_vote = distance <= accept_distance if flip else distance < stabilize_margin
-            if may_vote and next_uniform(rng_state) < abs(np.float64(q)):
+            vote_ok = may_vote(q, margins[b, o], accept_distance, stabilize_margin)
+            if vote_ok and next_uniform(rng_state) < abs(np.float64(q)):
                 vote = np.int32(1) if q > 0 else np.int32(-1)
                 for j in range(n_slots):
                     counter_delta[o, j] += vote * (2 * np.int32(x[b, pointers[o, j]]) - 1)
@@ -80,8 +76,8 @@ def backward(
                             grow_input[o] = i
                             grow_sign[o] = vote
                             break
-            if blame_inputs and (surrogate == NONE or distance < window):
-                c = np.float32(np.float64(q) / (distance + 1)) if surrogate == TRIANGLE else q
+            passed, c = passes_down(q, margins[b, o], window, surrogate)
+            if blame_inputs and passed:
                 for j in range(n_slots):
                     w = weights[o, j]
                     i = pointers[o, j]
