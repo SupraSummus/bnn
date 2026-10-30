@@ -236,6 +236,29 @@ Fashion-MNIST, a hidden layer of random slots and a CounterDense readout, 3 epoc
 * **A sparse readout needs rewiring:** N = 256 slots per class 0.757 without, 0.796 with (p = 0.1),
   N = 1024 0.836 (dense, consolidated the same way: 0.853; the exact polish needs a dense layer). 1 seed each.
 
+## Convolution
+
+`bnn/conv.py`: `ConvCounter` is a CounterDense applied to every patch of an image (valid, with a stride).
+Patches are rows, so a filter's counters collect the votes of every position, and the pressure on a pixel
+is the sum over the patches that contain it. A filter sees positions × batch rows per update,
+so a row votes with probability |pressure| / positions: without it a counter crosses ±2048 in one update.
+`OrPool` is binary max pooling (on iff any unit of the block is on; "not enough" goes to the whole block,
+"too much" to the units that are on).
+
+Fashion-MNIST, 3 epochs, CounterDense readout (`python -m benchmarks.conv 64x5/1,p2 fixed 0 3 '{"threshold": 2}'`),
+measured before "The ladder" (below):
+
+* **Random, fixed filters** (signs random, about half the synapses present, a fixed threshold) and one pooling:
+  64 filters 5×5, stride 1, pool 2: 0.872 ± 0.003 (3 seeds), from 1.6k filter synapses (and 63k in the readout);
+  128 filters 0.877, 64 filters 3×3 0.873 (1 seed). The best dense net was then 0.856 (now 0.871).
+  The threshold matters: a blank patch sums to 0, so at threshold 0 the background fires everywhere
+  (32×5/2 without pooling: 0.844 at 0, 0.848 at 1, 0.852 at 3). Pooling adds ~0.02 (32×5/2 0.847, 32×5/1 + pool 0.852).
+* **Deeper random stacks lose:** a second random conv layer (64×3×3 over 64 channels) after pooling 0.815-0.822
+  (thresholds 4 and 8), without the second pooling and with 128 filters 0.847. 1 seed each.
+* **Learned filters lose to random ones:** 32×5/1 + pool, learned (accept_distance 0, homeostasis, as hidden layers) 0.816,
+  random 0.852 (1 seed): the same as dense and sparse hidden layers.
+  Two conv layers with pooling, learned: 2×32 filters 0.776 (random 0.769), 2×64 0.774 (random 0.822). 1 seed each.
+
 ## The ladder
 
 Why did hidden layers learn less than random ones? `benchmarks/ladder.py` assembles training from parts,
