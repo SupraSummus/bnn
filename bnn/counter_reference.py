@@ -61,15 +61,18 @@ class ReferenceCounterDense(CounterDense):
         # An input fed by `reach` such outputs gets their sum divided by sqrt(reach), so the signal
         # neither dies out nor blows up from layer to layer. Pressure on correct outputs is
         # collateral, in the same units: an input that would fix one output and break another gets 0.
-        near = (q != 0) & (distance < self.window)
-        c = np.where(near, (q.astype(np.float64) / (distance + 1)).astype(np.float32), np.float32(0))
+        # (surrogate "box": 1 instead of 1 / (distance + 1); "none": every output with pressure passes all of it)
+        near = (q != 0) & ((distance < self.window) | (self.surrogate == "none"))
+        passed = (q.astype(np.float64) / (distance + 1)).astype(np.float32) if self.surrogate == "triangle" else q
+        c = np.where(near, passed, np.float32(0))
         w = self.weights.astype(np.float32)
         q_in = np.zeros(inputs.shape, dtype=np.float32)
         for o in range(self.output_features):  # in the kernels' order, so sums agree to the bit
             q_in += c[:, o:o + 1] * w[o]
         reach = near.astype(np.int64) @ (self.weights != 0).astype(np.int64)
         scale = np.sqrt(np.maximum(reach, 1).astype(np.float64)).astype(np.float32)
-        q_in = np.where(reach > 1, q_in / scale, q_in)
+        if self.normalize_reach:
+            q_in = np.where(reach > 1, q_in / scale, q_in)
 
         if self.homeostasis > 0:
             self._homeostasis(margins)

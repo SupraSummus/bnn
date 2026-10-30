@@ -2,6 +2,12 @@
 
 ## CounterDense
 
+* The ladder's gating (README, "The ladder") helps hidden layers on pixels (Fashion-MNIST 0.855 → 0.871) and breaks parity
+  even at flip distance 1, so it is set per benchmark. Why parity needs minimal disturbance and pixels its opposite is open
+  (parity's units must each find one conjunction; pixel features are redundant and smooth).
+  Something the layer measures itself (how correlated its units' pressure is?) should replace the hand setting.
+  Untried with it: deeper Fashion-MNIST nets.
+
 * Depth. The pressure rule trains plain chains on parity-8 at depth 1-8 (README). Open:
   * Parity-16 with 3×64 learned and fell back every few epochs (raw 0.92, 0.52, 0.86, 0.50 ..., consolidated 0.5);
     the ratchet holds it at 0.97 (README). What falls back is the input layer: at 0.96 accuracy it still changes
@@ -29,38 +35,12 @@
     against collapse: protecting fragile hidden units, lower vote rates, bigger counters (the hinge works);
     homeostasis toward 50% activity, re-centering only at init, moving thresholds on requests too far to accept;
     an output reading every hidden layer (solves wide parity by shortcut: any one layer can be cut).
-* Hidden layers on pixels beat a single layer only when learned slowly (README, "Wider and deeper"):
-  4096 units at `connect_level=256` 0.855, one layer 0.847, random forest 0.875.
-  The speed is set per benchmark (`hidden_kwargs`): parity wants the opposite (hidden counters ×4: parity-8 1.00 → 0.68).
-  It should follow from whether random features are already good, not be hand-set.
-  * At the default speed the units collapse onto each other (mean |correlation| 0.16 → 0.31,
-    5% have a twin at > 0.93): units with similar readout columns get the same pressure.
-    A hidden counter on pixels drifts ~17 per epoch (rms), so `connect_level` 16 leaves the random features within an epoch.
-  * 1024 units, 1 seed each: frozen 0.818, default 0.791, connect_level 256 0.834, 4096 0.830 (0.6% of synapses change:
-    the thresholds do most of it). Recycling near-twins every epoch 0.805.
-    Exact flip gains as the hidden pressure (the readout column is all that changes): 256 / 1024 units
-    0.783 → 0.803 / 0.791 → 0.813, nothing on Adult and parity; letting only the k best units vote per sample: no change.
-  * Two slow layers do worse (4096+1024 0.821, 4096+4096 0.841), 16384 slow units 0.865 (frozen 0.863),
-    Adult with 1024 slow units 0.847 (none 0.845). 1 seed each.
-  Tried before the pressure rule (10k-sample subset, 1-bit pixels, no consolidation, unless noted):
-  * Useful diagnostic: freeze a trained output layer and train only the hidden one.
-    With the old blame, training accuracy *drops* (0.71 → 0.35):
-    the hidden signal is harmful there, not just rare.
-    A flip requested for one sample moves synapses that shift the unit on thousands of others.
-  * Exact flip gains (how the output loss changes if one hidden unit flips),
-    updates on active inputs only,
-    and synapses whose counter resets after each change (Bop, Helwegen et al. 2019)
-    make that diagnostic go down (0.715 → 0.766 train).
-    Trained jointly or alternating with the output: ~0.735 on full data vs ~0.72 for one layer, 6x slower.
-    Doesn't learn parity.
-  * Fixed ±1 readout with Tsetlin-style feedback allocation: same plateau.
-    Fails parity -- all units of a class get the same target, nothing breaks the symmetry.
-  * Recruiting units that fix the current errors, then freezing them (Upstart-like, Frean 1990),
-    each new unit also seeing earlier ones (as in Cascade-Correlation):
-    learns parity-4 in some seeds (mean 0.89; without seeing earlier units 0.5).
-    Full data, 2-bit pixels, consolidated, 1 seed: Fashion-MNIST 0.840 → 0.845-0.850 after 10 rounds,
-    Adult 0.839 → ~0.84; training accuracy rises more (0.88 on Fashion-MNIST).
-    Not worth its code yet.
+* Before the ladder's gating, hidden layers on pixels beat a single layer only when learned slowly
+  (units at the default speed collapsed onto each other: those with similar readout columns get the same pressure).
+  Tried then, no or small gain: recycling near-twins, exact flip gains as the hidden pressure (+0.02),
+  letting only the k best units vote, Bop counters, a fixed ±1 readout, Upstart-like recruiting, two slow layers
+  (details in TODO.md before commit 98f3013). A diagnostic worth keeping: freeze a trained readout, train only the hidden layer,
+  and see whether training accuracy goes up.
 * Exact moves below the last hidden layer: flipping a unit and propagating the flip up
   gives no signal (parity-8 3×32 0.61, parity-16 3×64 0.50): a single flip is almost always absorbed above.
   Something between that and the surrogate (the flip's effect on the next layer's margins) is untested.
@@ -84,7 +64,8 @@
 * Kernels are single-threaded; benchmarks use the cores by running models side by side.
   For one big model, `margins` parallelizes over samples (prange) and the counter votes over outputs.
 * `CounterDense` settings split by role: `accept_distance` and `homeostasis` are for hidden layers,
-  `stabilize_margin` and `hinge` for the output (`build_counter_network` sets them). A role flag could set all four.
+  `stabilize_margin`, `hinge`, `surrogate` and `normalize_reach` for the output (`build_counter_network` sets them).
+  A role flag could set them all.
 * `CounterDense.forward/backward/update` now serve only tests and mixing with other layer types;
   training goes through `counter.train_epoch`. If no other layer type comes back, the per-batch path could go.
 

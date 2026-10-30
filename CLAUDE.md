@@ -10,4 +10,5 @@
 * `CounterDense` runs as numba kernels (`bnn/counter_kernels.py`, compiled on first use, cached in `__pycache__`).
   `bnn/counter_reference.py` is the same rule in numpy; a rule change goes into both,
   `bnn/counter_tests.py` checks they agree bit for bit.
+* `python -m benchmarks.ladder` swaps the rule's parts for their gradient versions one by one (README, "The ladder").
 * `flake8` reports isort errors that predate this code; don't mass-fix them in unrelated changes.

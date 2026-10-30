@@ -127,7 +127,7 @@ Parity is scored on the full truth table.
 
 | Dataset       | Majority | LogReg | DTree | RForest | Tsetlin | Dense | Counter |
 |---------------|---------:|-------:|------:|--------:|--------:|------:|--------:|
-| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.855 |
+| Fashion-MNIST | 0.100 | 0.847 | 0.788 | 0.875 | 0.709¹ | 0.159 | 0.871 |
 | Mushroom      | 0.518 | 0.999 | 1.000 | 1.000 | 0.997 | 0.953 | 1.000 |
 | Adult Income  | 0.761 | 0.851 | 0.804 | 0.828 | 0.831 | 0.761 | 0.845 |
 | Breast Cancer | 0.632 | 0.921 | 0.947 | 0.947 | 0.921 | 0.561 | 0.924 |
@@ -138,7 +138,7 @@ Parity is scored on the full truth table.
 ¹ trained on 5000 samples to keep the run short.
 Counter uses no hidden layer on Adult and Breast Cancer,
 where 1-3 hidden layers of 32 give the same (0.845-0.846, 0.906-0.915, before polishing).
-On Fashion-MNIST it uses 4096 hidden units that learn slowly (below); one layer gets 0.847.
+On Fashion-MNIST it uses 4096 hidden units whose votes are gated like a gradient's ("The ladder"); one layer gets 0.847.
 Over 10 seeds parity-4, -8 and -16 are solved every time, Mushroom in 9 (0.9999)
 (before the pressure rule: parity-8 0.90 ± 0.05, parity-16 0.58 ± 0.04, Mushroom 0.995).
 
@@ -196,6 +196,7 @@ Evaluating 60k samples costs about an epoch (the full margin matrix is allocated
   synapses away from the random start, and 4096 units give 0.850, polished 0.855 (3 seeds; frozen and polished 0.846).
   Parity is the opposite: its random features are useless, and slower hidden counters stop it learning.
   ~55 s per seed, polishing the 4096-wide readout ~20.
+  Superseded by the ladder's gating (below): 4096 units at the default speed 0.871, slowly 0.864.
 * **Depth.** Parity-8, plain chains, `benchmarks.bnn_model.train_and_evaluate` defaults, 3 seeds:
   solved at depth 1 to 6 with widths 64 to 256, 0.97-1.00 at depth 8 with widths 32 to 128
   (seed-sensitive: another random stream gave 8×128 a seed at 0.66), 12×64 0.60.
@@ -203,6 +204,63 @@ Evaluating 60k samples costs about an epoch (the full margin matrix is allocated
   a linear probe on the first hidden layer shows the feature ~100 epochs before accuracy moves.
   Before the pressure rule 3 hidden layers didn't learn parity at all.
   Open problems and what didn't work are in TODO.md.
+
+## The ladder
+
+Why did hidden layers learn less than random ones? `benchmarks/ladder.py` assembles training from parts,
+each in a rule version (CounterDense) and a gradient version (straight-through estimator, Adam), on the same discrete net.
+One hidden layer of 1024 on Fashion-MNIST, hidden counters at the default speed (connect_level 16), 5 epochs, batch 32.
+All rule parts: 0.789 ± 0.004 (3 seeds; CounterDense itself on the same setup 0.791, 0.781).
+All gradient parts: 0.852 (2 seeds). The hidden layer frozen at its random start: 0.816 (2 seeds).
+
+The rule with one part switched to its gradient version (seed 0, the rule 0.794):
+
+| Part | Rule → gradient | Acc |
+|---|---|---:|
+| gating | hidden: flips at distance 0 → any vote within the window; output: flips, and stabilizing below 2 → every output with pressure | 0.844 |
+| votes | binary, with probability \|signal\| → the signal as a float step | 0.809 |
+| pressure down | outputs in the window, 1 / (distance + 1) each, ÷ √reach → the plain sum through the synapses | 0.808 |
+| votes, with Adam | → float steps under Adam | 0.807 |
+| loss | hinge → softmax cross-entropy | 0.792 |
+| homeostasis | on → off | 0.762 |
+| inactive inputs | move the other way → don't move | 0.760 |
+| consolidation | on → off | 0.738 |
+
+* **Minimal disturbance held hidden layers back.** Gradient gating gives 0.846 ± 0.002 (3 seeds);
+  in the hidden layer alone 0.836, in the output alone 0.795. Hidden flips up to distance 2 / 8 / 40: 0.808 / 0.841 / 0.837
+  (at 40 test accuracy during training dips to 0.32); any hidden vote within distance 8: 0.829.
+* **With gradient gating and gradient pressure down, the rest of the rule beats gradient descent:**
+  integer counters, binary votes, ±1 inputs, homeostasis and consolidation give 0.869 ± 0.003 (3 seeds),
+  Adam on the same net 0.852; with float steps instead of votes 0.872 ± 0.001. With hidden flips up to 8 instead: 0.854 ± 0.001.
+  The learned layer is now well above the random one (0.816); the old rule was below it.
+* The parts gradient descent lacks are worth keeping: without the ±1 inputs, homeostasis or consolidation the rule loses 0.03-0.06.
+* Going the other way (gradient descent, then rule parts one by one) needs a step size per rung once Adam is gone
+  (cross-entropy with plain steps: 0.832 at 0.3, 0.797 at 1, diverging at 3; with the hinge, 1 diverges), so it is left out.
+
+**In CounterDense** (`surrogate`, `normalize_reach`; `accept_distance` and `stabilize_margin` take `"window"`),
+3 seeds each, the suite's ratchet and polish, so the numbers sit above the ladder's:
+
+| Benchmark | Rule | Output passes down whole | + hidden gated within the window |
+|---|---:|---:|---:|
+| Fashion-MNIST, 1024 hidden | 0.820 | 0.832 | 0.862 |
+| Fashion-MNIST, 4096 hidden | –² | 0.838 | **0.871** |
+| Adult, 32 hidden | 0.846 | 0.845 | 0.846 |
+| Breast Cancer, 32 hidden | 0.915 | 0.918 | 0.930 |
+| Mushroom, 32 hidden | 1.000 | 1.000 | 1.000 |
+| Parity-8, 128 / 4×64 | 1.000 / 1.000 | 1.000 / 1.000 | 0.934 / 0.729 |
+| Parity-16, 256 / 3×64 | 1.000 / 0.979 | 1.000 / 0.986 | 0.502 / 0.500 |
+
+² not measured at the default speed; the slowly learned layer the suite used had 0.855.
+
+* **The output passing its pressure down whole** (`surrogate="none"`, `normalize_reach=False`) helps or is neutral everywhere,
+  and is now the output layer's default (`build_counter_network`). Its margins are the loss's input, not a step to differentiate.
+* **Gating hidden votes within the window helps on pixels and breaks parity**, shallow or deep. Narrower doesn't reconcile them:
+  flips only, up to distance 1 / 2 / 4 / the window, give Fashion-MNIST (1024) 0.837 / 0.844 / 0.850 / 0.848,
+  parity-16 3×64 0.500 at every one, parity-8 4×64 0.68-0.69, Adult 0.844 / 0.841 / 0.840 / 0.834.
+  So it is set per benchmark (`hidden_kwargs`), for Fashion-MNIST only, as the hidden speed was;
+  the pixels' gain comes from votes for units already on the right side too (the window's flips alone: 0.848, all votes: 0.862).
+* Hidden layers passing down without a surrogate (`"box"`, no √reach) change nothing here (one hidden layer;
+  with depth only parity, which the gating already breaks).
 
 ## Biological parallels
 
