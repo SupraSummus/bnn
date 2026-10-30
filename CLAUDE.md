@@ -11,5 +11,5 @@
   `bnn/counter_reference.py` is the same rule in numpy, and `bnn/sparse.py` the same rule over N pointers per neuron;
   a rule change goes into all three, the tests check they agree bit for bit.
 * Experiments with their own scripts: `python -m benchmarks.ladder` (rule vs gradient, part by part),
-  `benchmarks.sparse`; usage in each docstring, results in README.
+  `benchmarks.sparse`, `benchmarks.conv`; usage in each docstring, results in README.
 * `flake8` reports isort errors that predate this code; don't mass-fix them in unrelated changes.

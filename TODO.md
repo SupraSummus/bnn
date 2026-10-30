@@ -74,6 +74,14 @@
 * Its kernels repeat CounterDense's rule over slots (the tests pin them to CounterDense). One slot-based rule
   with the dense layer as all slots, bit-packed, would remove the copy, if it can keep the dense speed.
 
+## Convolution
+
+* Learned filters lose to random ones (README, "Convolution"), and random second layers lose information.
+  So the deeper convolutional nets that make CNNs strong don't work here yet. The ladder's gating is untried here.
+  Rows vote at 1 / positions; slower filter counters, or votes only from the positions the readout uses, are untried.
+* `ConvCounter` trains through the per-batch path (a 32×5 layer: ~2 min per epoch); random filters are computed once.
+* `OrPool`'s pressure is a guess ("not enough" to the whole block); the alternative is the unit nearest its threshold.
+
 ## Code
 
 * Kernels are single-threaded; benchmarks use the cores by running models side by side.
