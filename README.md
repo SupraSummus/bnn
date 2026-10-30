@@ -245,6 +245,9 @@ is the sum over the patches that contain it. A filter sees positions × batch ro
 so a row votes with probability |pressure| / positions: without it a counter crosses ±2048 in one update.
 `OrPool` is binary max pooling (on iff any unit of the block is on; "not enough" goes to the whole block,
 "too much" to the units that are on).
+Both run as numba kernels that read patches straight from the image; `conv.train_epoch` trains a net batch by batch
+and skips the first layer's input pressure (same state, bit for bit, as `Sequence`). 1 thread: 32×5/1,p2 ~14 s per epoch
+(was 35 s), 32×5/1,p2,64x3/1,p2,64x3/1,p3 ~45 s (was 89 s).
 
 Fashion-MNIST, 3 epochs, CounterDense readout (`python -m benchmarks.conv 64x5/1,p2 fixed 0 3 '{"threshold": 2}'`),
 measured before "The ladder" (below):
@@ -256,10 +259,62 @@ measured before "The ladder" (below):
   (32×5/2 without pooling: 0.844 at 0, 0.848 at 1, 0.852 at 3). Pooling adds ~0.02 (32×5/2 0.847, 32×5/1 + pool 0.852).
 * **Deeper random stacks lose:** a second random conv layer (64×3×3 over 64 channels) after pooling 0.815-0.822
   (thresholds 4 and 8), without the second pooling and with 128 filters 0.847. 1 seed each.
-* **Learned filters lose to random ones:** 32×5/1 + pool, learned (accept_distance 0, homeostasis, as hidden layers) 0.816,
-  random 0.852 (1 seed): the same as dense and sparse hidden layers.
+* **Learned filters lost to random ones** (until homeostasis counted images, below): 32×5/1 + pool,
+  learned (accept_distance 0, homeostasis, as hidden layers) 0.816, random 0.852 (1 seed).
   Two conv layers with pooling, learned: 2×32 filters 0.776 (random 0.769), 2×64 0.774 (random 0.822). 1 seed each.
+* **Flips within the window bring learned filters up to random ones; stabilizing votes don't** (homeostasis 256, see below).
+  32×5/1 + pool, threshold 1, the readout passing pressure down whole: random filters 0.843, 0.857;
+  learned as hidden layers 0.824, 0.804; flips within the window 0.839, 0.848, 0.845, with a third of the synapses (~480 of 1.4k);
+  the whole window gating (stabilizing votes too, as on dense pixels) 0.777, 0.777, also with votes ×1/10 (0.787).
+  Two conv layers stay bad: flips within the window 0.724, the whole gating 0.571 (1 seed each).
 
+### Does conv depth pay here?
+
+`benchmarks/conv_ste.py` trains the same discrete nets by gradient descent (straight-through, Adam on the counters;
+needs torch), and as plain float ReLU nets. 32×5,p2 / 32×5,p2,64×3,p2 / 32×3,32×3,p2,64×3,64×3,p2,
+full data, 10 epochs (4 layers: 6):
+
+| | 1 conv layer | 2 | 4 |
+|---|---:|---:|---:|
+| binary, gradient | 0.859-0.870 (3 seeds) | 0.855, 0.858 | 0.839, 0.852 |
+| float ReLU | 0.882-0.887 (3 seeds) | 0.888 | 0.890 |
+
+* **With a flat readout one conv layer has all there is.** Over 30 epochs (1 seed) the binary 2-layer net
+  trails by ~5 epochs, ends level (test max 0.868 vs 0.870), and fits no better (train 0.886 vs 0.891);
+  float nets reach train 0.98 at either depth. Dropout, shifts and flips, or equal readout sizes down to 576 features
+  don't change that for float (20k samples).
+* **The binary nets underfit, and it isn't the optimizer.** 10k samples, 10-12 epochs, 1-2 seeds:
+  lower or decaying learning rates, separate rates for thresholds or the readout, or another readout temperature
+  fit no better, while the fully relaxed net (float weights, ReLU units, in counter units) fits as well as the float one.
+  Nor is it the gradient through binary layers: training layer 1 is worth +0.02 under a binary or a ReLU layer 2.
+  What can be pinned down is the binary top conv layer: ReLU there gives +0.015-0.02, and it isn't the bit count
+  (2-4 thresholds per channel, or 2× channels, give nothing).
+* **A readout that can't see positions forces depth.** Global pooling (64 position-free features), 20k samples,
+  8 epochs: float 1 layer (64×5,p24) 0.79, 3 layers (32×5,p2,64×3,p2,64×3,p3) 0.865 (0.877 on 60k);
+  binary by gradient 0.48-0.52 (an OR over 576 positions is nearly always on) and 0.74-0.78.
+  The rule (`python -m benchmarks.conv`, 20k samples, 4 epochs) doesn't beat random filters there:
+  learned 0.50, 0.54, random 0.47, 0.46 (with the old homeostasis, below).
+* **With a 2×2 flat readout depth pays, and the rule's learned layers beat random ones.**
+  `32x5/1,p2,64x3/1,p2,64x2/1,p2` (256 features), 20k samples, thresholds starting at 1, 4, 6:
+
+  | | 1 conv layer (64×5,p12) | 3 conv layers |
+  |---|---:|---:|
+  | float, gradient, 8 epochs | 0.827, 0.830 | 0.856, 0.856 |
+  | binary, gradient, 8 epochs (at 4) | 0.61, 0.66 | 0.794, 0.788 (0.758, 0.743) |
+  | binary units → ReLU, gradient | | 0.846 |
+  | rule, random filters | | 0.595, 0.633 |
+  | rule, learned, 4 epochs | | 0.733, 0.733, 0.724 |
+
+  The rule trails gradient descent on the same net by 0.01-0.03 at 4 epochs; gradient descent goes on to 0.80
+  (16 epochs), the rule doesn't (8 epochs: 0.729, 0.738). Flips within the window make it worse (0.52, 0.55).
+* **Homeostasis counted patches.** A conv layer's homeostasis run is counted in patch rows, so at 256 a filter
+  off over a few rows of one image's background jumped its threshold to its mean input sum, 6-16 per update
+  (its votes move it by less than 1). The readout chased that code: during training its test accuracy was 0.2-0.5,
+  while a readout refitted on the same code got 0.33-0.69. At 4096 rows (now `benchmarks.conv`'s default)
+  the 2×2 net goes 0.681, 0.698, 0.693 → 0.733, 0.733, 0.724 (3 seeds; 256 images per layer: 0.733, 0.725, 0.710),
+  and one learned layer (32×5/1,p2, 3 epochs, full data) 0.824, 0.804 → 0.853, 0.853, level with random filters.
+  About 0.4 of each layer's bits still change per epoch; slower votes or counters don't stop it, nor cost accuracy
+  once the readout is refitted. OrPool's pressure only to the block's unit nearest its threshold made it worse (0.60).
 ## The ladder
 
 Why did hidden layers learn less than random ones? `benchmarks/ladder.py` assembles training from parts,
