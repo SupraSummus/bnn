@@ -2,11 +2,17 @@
 
 ## CounterDense
 
-* The ladder's gating (README, "The ladder") helps hidden layers on pixels (Fashion-MNIST 0.855 → 0.871) and breaks parity
-  even at flip distance 1, so it is set per benchmark. Why parity needs minimal disturbance and pixels its opposite is open
-  (parity's units must each find one conjunction; pixel features are redundant and smooth).
-  Something the layer measures itself (how correlated its units' pressure is?) should replace the hand setting.
-  Untried with it: deeper Fashion-MNIST nets.
+* The ladder's gating helps hidden layers on pixels (Fashion-MNIST 0.855 → 0.871) and breaks parity
+  even at flip distance 1, so it is set per benchmark. Why is now known (README, "Depth, and why parity needs
+  minimal disturbance"): a vote's width must be below the scale on which the target changes along the margin,
+  one step for parity. Something a unit measures itself should set it: whether its votes at neighbouring margins agree.
+  Summed over a layer the disagreement doesn't show (votes at distance 0 and 1 agree in sign for 0.7-0.8 of counters
+  on parity too); it lives in the few units missing one input, which are the ones that learn.
+* Depth on Fashion-MNIST gives nothing, to gradient descent either (README). A task where depth pays for a gradient
+  on this net is needed before depth can test the rule; convolution is the obvious one.
+* Gradient descent with the usual window-wide surrogate can't learn parity on this net (0.50 everywhere);
+  gated at the threshold, like the rule, it gets 0.61-0.81. So the parity benchmarks test a narrow surrogate
+  and full wiring (a unit must see every input) more than credit assignment in general.
 
 * Depth. The pressure rule trains plain chains on parity-8 at depth 1-8 (README). Open:
   * Parity-16 with 3×64 learned and fell back every few epochs (raw 0.92, 0.52, 0.86, 0.50 ..., consolidated 0.5);

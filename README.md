@@ -194,7 +194,8 @@ Evaluating 60k samples costs about an epoch (the full margin matrix is allocated
   the units collapse onto each other, and even *training* accuracy drops (1024 units: 0.853 frozen, 0.799 learned).
   Learned slowly it helps: with `connect_level=256` (init ±384) instead of 16 the hidden layer moves 4% of its
   synapses away from the random start, and 4096 units give 0.850, polished 0.855 (3 seeds; frozen and polished 0.846).
-  Parity is the opposite: its random features are useless, and slower hidden counters stop it learning.
+  Parity is the opposite: its random features are useless at the initial wiring (with every synapse present they aren't,
+  see "Depth, and why parity needs minimal disturbance"), and slower hidden counters stop it learning.
   ~55 s per seed, polishing the 4096-wide readout ~20.
   Superseded by the ladder's gating (below): 4096 units at the default speed 0.871, slowly 0.864.
 * **Depth.** Parity-8, plain chains, `benchmarks.bnn_model.train_and_evaluate` defaults, 3 seeds:
@@ -264,7 +265,8 @@ measured before "The ladder" (below):
 Why did hidden layers learn less than random ones? `benchmarks/ladder.py` assembles training from parts,
 each in a rule version (CounterDense) and a gradient version (straight-through estimator, Adam), on the same discrete net.
 One hidden layer of 1024 on Fashion-MNIST, hidden counters at the default speed (connect_level 16), 5 epochs, batch 32.
-All rule parts: 0.789 ± 0.004 (3 seeds; CounterDense itself on the same setup 0.791, 0.781).
+Measured with the rule as it was (the output passing pressure down like a hidden layer, now `down=triangle`;
+the rule is now 0.808, seed 0). All rule parts: 0.789 ± 0.004 (3 seeds; CounterDense itself on the same setup 0.791, 0.781).
 All gradient parts: 0.852 (2 seeds). The hidden layer frozen at its random start: 0.816 (2 seeds).
 
 The rule with one part switched to its gradient version (seed 0, the rule 0.794):
@@ -308,13 +310,58 @@ The rule with one part switched to its gradient version (seed 0, the rule 0.794)
 
 * **The output passing its pressure down whole** (`surrogate="none"`, `normalize_reach=False`) helps or is neutral everywhere,
   and is now the output layer's default (`build_counter_network`). Its margins are the loss's input, not a step to differentiate.
-* **Gating hidden votes within the window helps on pixels and breaks parity**, shallow or deep. Narrower doesn't reconcile them:
+* **Gating hidden votes within the window helps on pixels and breaks parity**, shallow or deep (why: next section).
+  Narrower doesn't reconcile them:
   flips only, up to distance 1 / 2 / 4 / the window, give Fashion-MNIST (1024) 0.837 / 0.844 / 0.850 / 0.848,
   parity-16 3×64 0.500 at every one, parity-8 4×64 0.68-0.69, Adult 0.844 / 0.841 / 0.840 / 0.834.
   So it is set per benchmark (`hidden_kwargs`), for Fashion-MNIST only, as the hidden speed was;
   the pixels' gain comes from votes for units already on the right side too (the window's flips alone: 0.848, all votes: 0.862).
 * Hidden layers passing down without a surrogate (`"box"`, no √reach) change nothing here (one hidden layer;
   with depth only parity, which the gating already breaks).
+
+## Depth, and why parity needs minimal disturbance
+
+The ladder now takes chains of hidden layers and parity (`--hidden 64,64,64 --data parity16`),
+and `--probe` compares each hidden layer's signal with what flipping a unit actually does to the loss.
+
+**On Fashion-MNIST depth doesn't help, the rule nor gradient descent.**
+CounterDense with the window gating, 3 seeds: 1024 0.862, 2×1024 0.859, 3×1024 0.851, 2×2048 0.862, 4096 + 1024 0.857
+(4096 alone 0.871). Without the gating depth costs more: 0.832, 0.810, 0.784. In the ladder (5 epochs, 2 seeds):
+
+| Hidden | Rule, window gating | Gradient (STE, Adam) | Rule |
+|---|---:|---:|---:|
+| 1024 | 0.860, 0.859 | 0.853, 0.851 | 0.808 |
+| 2×1024 | 0.853, 0.861 | 0.835, 0.861 | 0.796 |
+| 3×1024 | 0.851, 0.847 | 0.855, 0.857 | 0.775 |
+
+Below the top hidden layer neither signal says much about a single flip: the sign of the gradient agrees with
+the flip's effect on cross-entropy for 0.54-0.63 of units and samples, the rule's (where it is nonzero) for 0.59-0.66.
+The top hidden layer's gradient is exact (corr 1.00), the rule's agrees for 0.78-0.98.
+So on pixels the window gating makes the rule as good as gradient descent at every depth tried,
+and the net, not the rule, is what gets nothing from depth.
+
+**Parity needs a surrogate one step wide.** Gradient descent on the same net never leaves chance:
+parity-16 256 and 3×64 (3 seeds; learning rates 0.03-2 on one), parity-8 128 and 4×64 (3 seeds).
+The rule solves parity-16 256 and parity-8 4×64 (3 of 3); parity-16 3×64 reaches 0.95-0.96 and falls back
+(the suite's ratchet keeps it). With the window gating the rule fails everywhere (parity-8 4×64: 0.54-0.68).
+Why, on parity-16 with one hidden layer:
+* Parity needs units that see every input. A unit's sum of ±x_i has the parity of the sum of x_i,
+  so with all 16 synapses present its margin's parity is the label's. Random units with all synapses
+  and a learned readout reach 0.52-0.97 (3 seeds), with half the synapses (the initial wiring) 0.50 (2 seeds).
+  Learning fills them in: under minimal disturbance synapse density goes 0.45 → 0.95.
+  Flips up to distance 1 hold it at 0.80, also from a start with every synapse present, and churn the code
+  (40% of the bits change per epoch, against 5%); keeping every synapse by force doesn't save them (0.48-0.54).
+* Only the threshold gives a consistent vote. For a unit missing one input, the votes on that input's counter
+  agree within a margin (|mean| 0.95-1.00) and alternate in sign with every step of the margin (all 13 such units):
+  the label alternates with it. A window sums them and they cancel. Stabilizing votes at the threshold itself
+  break it too (`gate_hidden=near0`: 0.50, 2 seeds). The straight-through gradient's box sums the same shells, hence its failure:
+  gated like minimal disturbance (`--ste gate_hidden=flip0`), gradient descent gets 0.81 and 0.61.
+* Pixels are the other way round: their targets change slowly with the margin, and the window's extra votes are more data.
+  On Fashion-MNIST they also make the hidden layer denser (synapses 0.43 → 0.87). A dense start without the window explains a third of the gain
+  (1024 hidden: 0.832 → 0.845, window 0.862).
+
+The width over which a unit's votes are averaged is a surrogate derivative's width,
+and it has to be below the scale on which the target changes along the margin: one step for parity, the window for pixels.
 
 ## Biological parallels
 
