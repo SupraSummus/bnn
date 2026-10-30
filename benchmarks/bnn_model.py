@@ -42,7 +42,8 @@ def build_network(input_features, n_classes, hidden_sizes=(64, 32)):
 
 
 def build_counter_network(
-    input_features, n_classes, hidden_sizes=(64, 32), rng=None, hidden_kwargs=None, **layer_kwargs,
+    input_features, n_classes, hidden_sizes=(64, 32), rng=None, hidden_kwargs=None, output_kwargs=None,
+    **layer_kwargs,
 ):
     """
     Build a CounterDense network for classification.
@@ -50,15 +51,17 @@ def build_counter_network(
     Hidden layers only accept flips they can make cheaply (minimal disturbance)
     and revive units that stopped varying (homeostasis); the output layer, whose
     errors are exact, takes them all and also keeps a safety margin on correct
-    answers. `layer_kwargs` go to every layer, `hidden_kwargs` (over them) to the hidden ones.
+    answers. Its margins are the loss's input, not a step to differentiate, so it passes
+    its pressure down whole, summed, without dividing by sqrt(reach) (README, "The ladder").
+    `layer_kwargs` go to every layer, `hidden_kwargs` and `output_kwargs` (over them)
+    to the hidden ones and the output layer.
     """
     sizes = [input_features, *hidden_sizes]
-    hidden_kwargs = {**layer_kwargs, **(hidden_kwargs or {})}
-    layers = [
-        CounterDense(n_in, n_out, accept_distance=0, homeostasis=256, rng=rng, **hidden_kwargs)
-        for n_in, n_out in zip(sizes, sizes[1:])
-    ]
-    layers.append(CounterDense(sizes[-1], n_classes, stabilize_margin=2, rng=rng, **layer_kwargs))
+    hidden_kwargs = {"accept_distance": 0, "homeostasis": 256, **layer_kwargs, **(hidden_kwargs or {})}
+    output_kwargs = {"stabilize_margin": 2, "surrogate": "none", "normalize_reach": False,
+                     **layer_kwargs, **(output_kwargs or {})}
+    layers = [CounterDense(n_in, n_out, rng=rng, **hidden_kwargs) for n_in, n_out in zip(sizes, sizes[1:])]
+    layers.append(CounterDense(sizes[-1], n_classes, rng=rng, **output_kwargs))
     return Sequence(layers)
 
 
@@ -129,6 +132,7 @@ def train_and_evaluate(
     seed=None,
     layer_kwargs=None,
     hidden_kwargs=None,
+    output_kwargs=None,
     consolidate=True,
     polish_steps=32,
     ratchet_tolerance=0.25,
@@ -159,6 +163,7 @@ def train_and_evaluate(
             hidden_sizes=hidden_sizes,
             rng=rng,
             hidden_kwargs=hidden_kwargs,
+            output_kwargs=output_kwargs,
             **(layer_kwargs or {}),
         )
     else:

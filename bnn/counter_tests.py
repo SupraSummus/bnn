@@ -62,6 +62,21 @@ def test_pressure_from_several_outputs_scales_with_sqrt():
     np.testing.assert_array_almost_equal(not_enough, [[np.sqrt(2)]])
 
 
+def test_surrogates():
+    # outputs at distance 0, 1 and 2 from firing, window 2; input 0 feeds the first two
+    weights = [[1, 1, 0, 0], [1, 0, 1, 0], [0, 0, 0, 1]]
+    for surrogate, normalize_reach, want in [
+        ("triangle", True, [1.5 / np.sqrt(2), 1, 0.5, 0]),
+        ("box", False, [2, 1, 1, 0]),
+        ("none", False, [2, 1, 1, 1]),
+    ]:
+        for layer_class in (CounterDense, ReferenceCounterDense):
+            layer = make_layer(weights, [1, 2, 3], layer_class, window=2, surrogate=surrogate, normalize_reach=normalize_reach)
+            _, state = layer.forward(np.zeros((1, 4), dtype=bool))
+            _, not_enough = layer.backward(state, np.zeros((1, 3)), np.ones((1, 3)))
+            np.testing.assert_array_almost_equal(not_enough, [want])
+
+
 def test_output_pressure_hinge():
     # margins 5, 0 and -1
     for layer_class in (CounterDense, ReferenceCounterDense):
@@ -140,6 +155,8 @@ def test_kernels_match_reference_step():
         {"accept_distance": 0, "window": 30},
         {"stabilize_margin": 2, "connect_level": 2, "init_range": 3},
         {"accept_distance": 1, "homeostasis": 5},
+        {"surrogate": "box", "normalize_reach": False, "window": 20},
+        {"surrogate": "none", "accept_distance": 10, "stabilize_margin": 10},
     ]:
         fast = CounterDense(150, 7, rng=np.random.default_rng(2), **kwargs)
         reference = ReferenceCounterDense(150, 7, rng=np.random.default_rng(2), **kwargs)
@@ -193,9 +210,9 @@ def test_kernels_match_reference_training():
     rng = np.random.default_rng(3)
     X = random_inputs(rng, 200, 70)
     y = (X[:, :5].sum(axis=1) + X[:, 60]) % 2
-    for hidden in [(), (24,), (24, 12)]:
-        fast = train(CounterDense, X, y, hidden, epochs=4, batch_size=8, homeostasis=16)
-        reference = train(ReferenceCounterDense, X, y, hidden, epochs=4, batch_size=8, homeostasis=16)
+    for hidden, kwargs in [((), {}), ((24,), {}), ((24, 12), {}), ((24, 12), {"surrogate": "none", "normalize_reach": False})]:
+        fast = train(CounterDense, X, y, hidden, epochs=4, batch_size=8, homeostasis=16, **kwargs)
+        reference = train(ReferenceCounterDense, X, y, hidden, epochs=4, batch_size=8, homeostasis=16, **kwargs)
         for f, r in zip(fast, reference):
             assert_same_state(f, r)
 
@@ -204,9 +221,12 @@ def test_fused_epoch_matches_layer_by_layer():
     rng = np.random.default_rng(4)
     X = random_inputs(rng, 150, 130)
     y = (X[:, :3].sum(axis=1) + X[:, 100]) % 2
-    for hidden, homeostasis in [((), 0), ((20,), 0), ((20, 12), 0), ((20, 12), 16)]:
-        fused = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, fused=True, homeostasis=homeostasis)
-        stepped = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, homeostasis=homeostasis)
+    for hidden, homeostasis, kwargs in [
+        ((), 0, {}), ((20,), 0, {}), ((20, 12), 0, {}), ((20, 12), 16, {}),
+        ((20, 12), 16, {"surrogate": "box", "normalize_reach": False}),
+    ]:
+        fused = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, fused=True, homeostasis=homeostasis, **kwargs)
+        stepped = train(CounterDense, X, y, hidden, epochs=3, batch_size=7, homeostasis=homeostasis, **kwargs)
         for f, s in zip(fused, stepped):
             assert_same_state(f, s)
 

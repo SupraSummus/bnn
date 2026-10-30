@@ -28,6 +28,30 @@ from .abstract import ArrayBool, ArrayFloat, Layer
 NO_LIMIT = np.iinfo(np.int32).max
 
 
+def resolve_settings(fan_in, connect_level, counter_max, init_range, window, accept_distance, stabilize_margin, hinge):
+    """
+    CounterDense's defaults (see its docstring) for a neuron summing `fan_in` inputs:
+    margins spread like sqrt(fan_in), so the defaults that are distances scale with it.
+    """
+    spread = np.sqrt(fan_in)
+    if connect_level is None:
+        connect_level = max(2, int(round(0.7 * spread)))
+    if counter_max is None:
+        counter_max = 8 * connect_level
+    if init_range is None:
+        init_range = connect_level + connect_level // 2
+    if window is None:
+        window = max(1, int(round(spread)))
+    if accept_distance == "window":
+        accept_distance = window
+    if stabilize_margin == "window":
+        stabilize_margin = window
+    if hinge is None:
+        hinge = max(stabilize_margin, int(round(spread / 3)))
+    assert 0 < connect_level <= counter_max
+    return connect_level, counter_max, init_range, window, accept_distance, stabilize_margin, hinge
+
+
 class CounterDense(Layer):
     def __init__(
         self,
@@ -42,6 +66,8 @@ class CounterDense(Layer):
         stabilize_margin: int = 0,
         hinge: Optional[int] = None,
         homeostasis: int = 0,
+        surrogate: str = "triangle",
+        normalize_reach: bool = True,
         rng: Optional[np.random.Generator] = None,
     ):
         """
@@ -60,26 +86,24 @@ class CounterDense(Layer):
                 each 1 / (distance + 1) of it. Default sqrt(input_features), about one margin spread.
             accept_distance: ignore pressure to flip an output further than this
                 from flipping (minimal disturbance). 0 for hidden layers, None for
-                the output layer, whose errors are all real.
+                the output layer, whose errors are all real; "window": the window.
             stabilize_margin: an output whose state agrees with its pressure but is closer
-                than this to flipping votes to stay. Output layer only.
+                than this to flipping votes to stay; "window": the window.
             hinge: output_pressure sends nothing for outputs right by at least this;
                 they no longer push the layers below. Output layer only.
                 Default sqrt(input_features) / 3, at least stabilize_margin.
             homeostasis: a unit whose output was the same on this many samples in a row
                 moves its threshold to the running mean of its input sum (revives units that
                 no pressure can reach). Hidden layers; 0 = off.
+            surrogate: how an output passes its pressure to its inputs, the derivative of its step:
+                "triangle" 1 / (distance + 1) within the window, "box" 1 within the window,
+                "none" all of it, from every output (for an output layer, whose margins are the loss's input).
+            normalize_reach: divide the pressure on an input by sqrt(how many outputs passed it some).
         """
-        fan_in = np.sqrt(input_features)
-        if connect_level is None:
-            connect_level = max(2, int(round(0.7 * fan_in)))
-        if counter_max is None:
-            counter_max = 8 * connect_level
-        if window is None:
-            window = max(1, int(round(fan_in)))
-        if hinge is None:
-            hinge = max(stabilize_margin, int(round(fan_in / 3)))
-        assert 0 < connect_level <= counter_max
+        connect_level, counter_max, init_range, window, accept_distance, stabilize_margin, hinge = resolve_settings(
+            input_features, connect_level, counter_max, init_range, window, accept_distance, stabilize_margin, hinge,
+        )
+        assert surrogate in kernels.SURROGATES, surrogate
         self.input_features = input_features
         self.output_features = output_features
         self.connect_level = connect_level
@@ -90,10 +114,10 @@ class CounterDense(Layer):
         self.stabilize_margin = stabilize_margin
         self.hinge = hinge
         self.homeostasis = homeostasis
+        self.surrogate = surrogate
+        self.normalize_reach = normalize_reach
         self.rng = rng if rng is not None else np.random.default_rng()
 
-        if init_range is None:
-            init_range = connect_level + connect_level // 2
         self.counters = np.clip(
             self.rng.integers(-init_range, init_range + 1, size=(output_features, input_features)),
             -counter_max, counter_max,
@@ -136,10 +160,10 @@ class CounterDense(Layer):
         assert too_much.shape == margins.shape
         assert not_enough.shape == margins.shape
         pressure = np.asarray(not_enough, dtype=np.float32) - np.asarray(too_much, dtype=np.float32)
-        _, _, _, window, accept_distance, stabilize_margin, homeostasis, _ = self._params()
+        _, _, _, window, accept_distance, stabilize_margin, homeostasis, _, surrogate, normalize_reach = self._params()
         q_in = kernels.backward(
             np.ascontiguousarray(inputs, dtype=np.bool_), margins, pressure, self.weights,
-            window, accept_distance, stabilize_margin, True,
+            window, accept_distance, stabilize_margin, surrogate, normalize_reach != 0, True,
             self.counter_delta, self.threshold_delta, self.touched, self.rng_state,
         )
         if homeostasis > 0:
@@ -191,6 +215,7 @@ class CounterDense(Layer):
         return (
             self.connect_level, self.counter_max, self.threshold_level,
             self.window, accept_distance, self.stabilize_margin, self.homeostasis, self.hinge,
+            kernels.SURROGATES.index(self.surrogate), int(self.normalize_reach),
         )
 
     def _add_to_tally(self):

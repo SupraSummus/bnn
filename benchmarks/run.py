@@ -165,8 +165,9 @@ BENCHMARKS = [
         {
             "n_epochs": 5, "hidden_sizes": (4096,), "batch_size": 32,
             "layer_kwargs": {"connect_level": 16, "counter_max": 128, "init_range": 24, "threshold_level": 1},
-            # the hidden layer moves little from its random start (see README, "Wider and deeper")
-            "hidden_kwargs": {"connect_level": 256, "counter_max": 2048, "init_range": 384},
+            # on pixels, hidden units vote anywhere within the window, not only at their threshold;
+            # parity needs minimal disturbance (README, "The ladder")
+            "hidden_kwargs": {"accept_distance": "window", "stabilize_margin": "window"},
         },
         {"n_epochs": 3, "max_train": 5000, "n_clauses": 100, "T": 20, "s": 10.0},
     ),

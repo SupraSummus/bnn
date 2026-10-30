@@ -28,6 +28,9 @@ LAYER_STATE = (
 )
 # rate of the running mean of its input sum a hidden unit keeps for homeostasis, per sample
 HOMEOSTASIS_RATE = 1.0 / 64
+# how an output passes pressure down (CounterDense.surrogate), by index
+SURROGATES = ("triangle", "box", "none")
+TRIANGLE, BOX, NONE = range(3)
 
 
 @intrinsic
@@ -128,7 +131,7 @@ def output_pressure(margins, targets, hinge):
 @njit(cache=True)
 def backward(
     x, margins, pressure, weights,
-    window, accept_distance, stabilize_margin, blame_inputs,
+    window, accept_distance, stabilize_margin, surrogate, normalize_reach, blame_inputs,
     counter_delta, threshold_delta, touched, rng_state,
 ):
     """
@@ -159,13 +162,13 @@ def backward(
                     counter_delta[o, i] += vote * (2 * np.int32(x[b, i]) - 1)
                 threshold_delta[o] -= vote
                 touched[o] = True
-            if blame_inputs and distance < window:
-                c = np.float32(np.float64(q) / (distance + 1))
+            if blame_inputs and (surrogate == NONE or distance < window):
+                c = np.float32(np.float64(q) / (distance + 1)) if surrogate == TRIANGLE else q
                 for i in range(n_in):  # absent synapses add 0, as in the reference
                     w = weights[o, i]
                     q_in[b, i] += c * np.float32(w)
                     reach[i] += w != 0
-        if blame_inputs:
+        if blame_inputs and normalize_reach:
             for i in range(n_in):
                 if reach[i] > 1:
                     q_in[b, i] /= np.float32(np.sqrt(np.float64(reach[i])))
@@ -262,9 +265,10 @@ def train_epoch(
 
         q = output_pressure(sums[n_layers - 1], targets[batch], params[n_layers - 1][7])
         for k in range(n_layers - 1, -1, -1):
-            _, _, _, window, accept_distance, stabilize_margin, run_length, _ = params[k]
+            _, _, _, window, accept_distance, stabilize_margin, run_length, _, surrogate, normalize_reach = params[k]
             q = backward(
-                inputs[k], sums[k], q, weights[k], window, accept_distance, stabilize_margin, k > 0,
+                inputs[k], sums[k], q, weights[k], window, accept_distance, stabilize_margin,
+                surrogate, normalize_reach != 0, k > 0,
                 counter_delta[k], threshold_delta[k], touched[k], rng_state[k],
             )
             if run_length > 0:
