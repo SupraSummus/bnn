@@ -129,6 +129,29 @@ def output_pressure(margins, targets, hinge):
 
 
 @njit(cache=True)
+def may_vote(q, margin, accept_distance, stabilize_margin):
+    """
+    Whether an output with pressure q != 0 and this margin may vote.
+    Callers draw one number per output that may vote, in row-major order, and vote with probability |q|.
+    """
+    m = np.int64(margin)
+    out = m >= 0
+    distance = m if out else -m - 1
+    flip = (q > 0) != out
+    return distance <= accept_distance if flip else distance < stabilize_margin
+
+
+@njit(cache=True)
+def passes_down(q, margin, window, surrogate):
+    """(whether an output with pressure q != 0 and this margin passes pressure to its inputs, how much of it)."""
+    m = np.int64(margin)
+    distance = m if m >= 0 else -m - 1
+    if surrogate != NONE and distance >= window:
+        return False, np.float32(0)
+    return True, np.float32(np.float64(q) / (distance + 1)) if surrogate == TRIANGLE else np.float32(q)
+
+
+@njit(cache=True)
 def backward(
     x, margins, pressure, weights,
     window, accept_distance, stabilize_margin, surrogate, normalize_reach, blame_inputs,
@@ -150,20 +173,15 @@ def backward(
             q = pressure[b, o]
             if q == 0:
                 continue
-            m = np.int64(margins[b, o])
-            out = m >= 0
-            distance = m if out else -m - 1
-            flip = (q > 0) != out
-            may_vote = distance <= accept_distance if flip else distance < stabilize_margin
-            # one draw per output that may vote, in row-major order
-            if may_vote and next_uniform(rng_state) < abs(np.float64(q)):
+            vote_ok = may_vote(q, margins[b, o], accept_distance, stabilize_margin)
+            if vote_ok and next_uniform(rng_state) < abs(np.float64(q)):
                 vote = np.int32(1) if q > 0 else np.int32(-1)
                 for i in range(n_in):
                     counter_delta[o, i] += vote * (2 * np.int32(x[b, i]) - 1)
                 threshold_delta[o] -= vote
                 touched[o] = True
-            if blame_inputs and (surrogate == NONE or distance < window):
-                c = np.float32(np.float64(q) / (distance + 1)) if surrogate == TRIANGLE else q
+            passed, c = passes_down(q, margins[b, o], window, surrogate)
+            if blame_inputs and passed:
                 for i in range(n_in):  # absent synapses add 0, as in the reference
                     w = weights[o, i]
                     q_in[b, i] += c * np.float32(w)

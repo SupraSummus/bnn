@@ -10,6 +10,8 @@
 * `CounterDense` runs as numba kernels (`bnn/counter_kernels.py`, compiled on first use, cached in `__pycache__`).
   `bnn/counter_reference.py` is the same rule in numpy, and `bnn/sparse.py` the same rule over N pointers per neuron;
   a rule change goes into all three, the tests check they agree bit for bit.
+  `bnn/conv.py`'s kernels run the same rule over patches (`conv_tests` pins them to CounterDense);
+  who votes and what passes down are `counter_kernels.may_vote` and `passes_down`, shared by all kernels.
 * Experiments with their own scripts: `python -m benchmarks.ladder` (rule vs gradient, part by part),
   `benchmarks.sparse`, `benchmarks.conv`; usage in each docstring, results in README.
 * `flake8` reports isort errors that predate this code; don't mass-fix them in unrelated changes.
