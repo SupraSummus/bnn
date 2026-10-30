@@ -205,6 +205,37 @@ Evaluating 60k samples costs about an epoch (the full margin matrix is allocated
   Before the pressure rule 3 hidden layers didn't learn parity at all.
   Open problems and what didn't work are in TODO.md.
 
+## Sparse: N pointers per neuron
+
+The idea above stores synapses as pointers; `CounterDense` grew dense (about half of all pairs connected).
+`bnn/sparse.py` (`SparseCounter`) goes back: every neuron has a fixed number N of slots,
+each a pointer to an input with a counter under it, and the rule is CounterDense's on the slots
+(with every input in a slot it is CounterDense bit for bit, `bnn/sparse_tests.py`).
+Work and memory per neuron are O(N), not O(inputs).
+With `rewire` > 0, a slot holding no synapse can move: when the neuron votes, it asks for a synapse
+on an input that is on in that sample (cases 1.1 and 2.1 of the idea), at ±connect_level.
+
+Fashion-MNIST, a hidden layer of random slots and a CounterDense readout, 3 epochs
+(`python -m benchmarks.sparse 4096 8 fixed dense 0 3`), measured before "The ladder" (below):
+
+* **Random and fixed is best.** Pointers and signs random, counters at ±2048 against connect_level 256
+  (~1% of synapses still fade in 3 epochs), thresholds 0, only the readout learns:
+  4096 units with N = 8 give 0.856 ± 0.002 (3 seeds), N = 16 0.853 ± 0.002;
+  1 seed: N = 1, 2, 4, 32 0.61, 0.77, 0.842, 0.853; 16384 units with N = 8 0.861.
+  The slowly learned dense layer of 4096 ("Wider and deeper") has 0.855 with ~100× the hidden synapses.
+  That is the fruit fly's olfactory circuit (Dasgupta et al. 2017): a wide sparse random expansion and a learned readout.
+* **Counting pointers as parameters:** 33k hidden pointers + 28k readout synapses for 0.856
+  (logistic regression: 15.7k floats, 0.843; MLP with 256 hidden: 400k floats, 0.872).
+  In bits (12 per pointer, 2 per possible readout synapse) ~58 KB, logistic regression in float32 63 KB.
+* **Learning the sparse hidden layer hurts**, as it did dense: counters at the default speed 0.840,
+  slower (connect_level 16, threshold_level 64) 0.839, rewiring 0.817-0.840 (p 0.01-0.1; at 0.1 every slot moves ~10 times in 3 epochs),
+  thresholds moving with fixed synapses 0.846 (1 seed each). Test accuracy during training drops to 0.4-0.6:
+  the readout chases a moving code.
+* **Thresholds above 0 give the fly's sparse code:** N = 16 at threshold 4 has 7% of units on and gets 0.849
+  with half the readout synapses (15k); threshold 8 leaves almost nothing on (0.62). 1 seed.
+* **A sparse readout needs rewiring:** N = 256 slots per class 0.757 without, 0.796 with (p = 0.1),
+  N = 1024 0.836 (dense, consolidated the same way: 0.853; the exact polish needs a dense layer). 1 seed each.
+
 ## The ladder
 
 Why did hidden layers learn less than random ones? `benchmarks/ladder.py` assembles training from parts,
@@ -272,6 +303,8 @@ The rule with one part switched to its gradient version (seed 0, the rule 0.794)
 ## Related work
 
 * Tsetlin Machine, Granmo 2018, [arXiv:1804.01508](https://arxiv.org/abs/1804.01508) -- baseline in `bnn/tsetlin.py`.
+* Dasgupta, Stevens, Navlakha, *A neural algorithm for a fundamental computing problem*, Science 2017 -- the fly's sparse random expansion.
+* SET: Mocanu et al., *Scalable training of artificial neural networks with adaptive sparse connectivity*, Nature Communications 2018 -- fixed synapse budget, weak synapses regrown elsewhere.
 * SBPI: Baldassi et al., *Efficient supervised learning in networks with binary synapses*, PNAS 2007 -- hidden discrete states, margin-gated updates.
 * MADALINE Rule II: Winter & Widrow 1988 -- minimal disturbance in multilayer threshold nets.
 * Straight-through estimator: Bengio, Léonard, Courville 2013, [arXiv:1308.3432](https://arxiv.org/abs/1308.3432) -- a surrogate derivative for a step.

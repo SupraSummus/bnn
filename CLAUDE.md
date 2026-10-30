@@ -8,7 +8,8 @@
 * Results and design notes live in README.md; open problems in TODO.md -- update both when numbers change.
 * Report accuracy over several seeds; single runs of these learners vary by ±0.1.
 * `CounterDense` runs as numba kernels (`bnn/counter_kernels.py`, compiled on first use, cached in `__pycache__`).
-  `bnn/counter_reference.py` is the same rule in numpy; a rule change goes into both,
-  `bnn/counter_tests.py` checks they agree bit for bit.
-* `python -m benchmarks.ladder` swaps the rule's parts for their gradient versions one by one (README, "The ladder").
+  `bnn/counter_reference.py` is the same rule in numpy, and `bnn/sparse.py` the same rule over N pointers per neuron;
+  a rule change goes into all three, the tests check they agree bit for bit.
+* Experiments with their own scripts: `python -m benchmarks.ladder` (rule vs gradient, part by part),
+  `benchmarks.sparse`; usage in each docstring, results in README.
 * `flake8` reports isort errors that predate this code; don't mass-fix them in unrelated changes.
